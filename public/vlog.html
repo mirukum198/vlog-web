@@ -169,7 +169,12 @@ body{display:flex;flex-direction:column}
         <div class="stat"><span>クリップ数</span><span id="stClips">-</span></div>
         <div class="stat"><span>記録日数</span><span id="stDays">-</span></div>
         <div class="stat"><span>使用容量</span><span id="stUsage">-</span></div>
-        <div class="stat"><span>永続化</span><span id="stPersist">-</span></div>
+        <div class="stat"><span>自動削除から保護</span><span id="stPersist">-</span></div>
+        <div class="note">
+          使用容量の右側（分母）は Safari が端末の空き容量から算出した上限の推定値です。保証値ではなく、iPhone の空きが減れば下がります。<br>
+          自動削除から保護 = Safari は7日間使わないサイトのデータを消しますが、これが「有効」ならその対象外になります。ホーム画面に追加していると自動で有効になり、アプリ側から切り替えることはできません。<br>
+          <b>ただし手動でのサイトデータ削除やホーム画面アプリの削除では消えます。バックアップの代わりにはなりません。</b>
+        </div>
         <button class="danger" id="wipe">すべてのクリップを削除</button>
       </div>
       <div class="row">
@@ -536,6 +541,7 @@ $('#keep').onclick = async () => {
     id: isoLocal(dt), date, time: timeStrOf(dt),
     blob, thumb, w:CW, h:CH, fps:FPS, mime:CONTAINER,
     codec: MIME, durationSec: cfg.dur, createdAt: dt.getTime(),
+    bytes: blob.size,
   });
   await bumpDay(date, +1);
   closeConfirm();
@@ -671,7 +677,7 @@ document.querySelectorAll('#tabbar button').forEach(b => {
   if (navigator.storage && navigator.storage.persist) {
     try {
       const p = (await navigator.storage.persisted()) || (await navigator.storage.persist());
-      $('#stPersist').textContent = p ? '有効' : '未許可（7日未使用で消える可能性）';
+      $('#stPersist').textContent = p ? '有効' : '未許可（7日使わないと消える可能性）';
     } catch (e) { $('#stPersist').textContent = '不明'; }
   } else $('#stPersist').textContent = '非対応';
   if (!MIME) toast('この端末では録画できません（MediaRecorder 非対応）');
