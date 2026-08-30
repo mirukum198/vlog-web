@@ -54,7 +54,9 @@ body{display:flex;flex-direction:column}
 #confirm{position:absolute;inset:0;background:#000;display:none;flex-direction:column;z-index:20}
 #confirm.on{display:flex}
 #cvid{flex:1;min-height:0;width:100%;object-fit:contain;background:#000}
-#confbar{flex:none;display:flex;gap:10px;padding:12px 14px calc(12px + var(--safe-b));background:var(--panel)}
+#confbar{flex:none;display:flex;gap:10px;flex-wrap:wrap;align-items:center;
+  padding:12px 14px calc(12px + var(--safe-b));background:var(--panel)}
+#confAud{flex-basis:100%;font-size:12px;color:var(--sub);text-align:center;font-variant-numeric:tabular-nums}
 #confbar button{flex:1;padding:14px;border-radius:11px;border:0;font-size:15px;font-weight:600}
 #retake{background:#20242c;color:var(--fg)}
 #keep{background:var(--ok);color:#fff}
@@ -82,6 +84,8 @@ body{display:flex;flex-direction:column}
   background:linear-gradient(rgba(0,0,0,.7),transparent);font-variant-numeric:tabular-nums}
 .cell em{position:absolute;right:4px;bottom:4px;font-style:normal;font-size:10px;
   background:#000a;border-radius:4px;padding:1px 4px;font-variant-numeric:tabular-nums}
+.cell i{position:absolute;left:4px;bottom:4px;font-style:normal;font-size:10px;
+  background:#5a1f1fcc;color:#ffb4a8;border-radius:4px;padding:1px 4px}
 .ph{height:120px}
 #empty{padding:40px 24px;color:var(--sub);font-size:13px;text-align:center;line-height:1.8}
 
@@ -154,11 +158,13 @@ body{display:flex;flex-direction:column}
     <div id="recbar">
       <button id="flip"><span class="ic">⇄</span><span id="flipLbl">背面</span></button>
       <button id="shoot" disabled></button>
-      <div id="recmeta"><b id="nowLbl">--</b><br><span id="todayLbl">本日 0本</span></div>
+      <div id="recmeta"><b id="nowLbl">--</b><br><span id="todayLbl">本日 0本</span>
+        <br><span id="audLbl">音声-</span></div>
     </div>
     <div id="confirm">
       <video id="cvid" playsinline muted loop></video>
       <div id="confbar">
+        <div id="confAud">-</div>
         <button id="retake">撮り直し</button>
         <button id="keep">保存</button>
       </div>
@@ -212,6 +218,7 @@ body{display:flex;flex-direction:column}
         <div class="stat"><span>解像度</span><span>720 x 1280 固定</span></div>
         <div class="stat"><span>フレームレート</span><span>30 fps 固定</span></div>
         <div class="stat"><span>形式</span><span id="stMime">-</span></div>
+        <div class="stat"><span>マイク</span><span id="stMic">-</span></div>
         <div class="note">全クリップを同一設定で録ることで、書き出し時の連結を再エンコードなし（無変換結合）で行っています。</div>
       </div>
       <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.2</div>
@@ -363,17 +370,48 @@ const CONTAINER = MIME.split(';')[0] || 'video/mp4';
 /* ============================================================
    カメラ
    ============================================================ */
-let stream = null;
+/* 映像と音声は別々のストリームで持つ。
+   カメラを切り替えるたびに音声まで取り直すと、iOS ではマイクが
+   無音のまま復帰することがあるため、音声トラックは一度掴んだら使い回す。 */
+let stream = null;          // 映像（カメラ切替のたびに作り直す）
+let micStream = null;       // 音声（掴んだまま維持する）
+let curAudio = null;        // 実際に録音に使う音声トラック
 const srcVideo = document.createElement('video');
 srcVideo.playsInline = true; srcVideo.muted = true; srcVideo.setAttribute('playsinline','');
 
+const liveTrack = (t) => !!t && t.readyState === 'live';
+
+async function ensureAudio(){
+  let at = micStream && micStream.getAudioTracks()[0];
+  if (!liveTrack(at)) {
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      at = micStream.getAudioTracks()[0];
+    } catch (e) { at = null; }
+  }
+  if (at) at.enabled = true;
+  curAudio = liveTrack(at) ? at : null;
+  updateAudioLbl();
+  return curAudio;
+}
+
+function updateAudioLbl(){
+  const el = $('#audLbl');
+  if (!el) return;
+  const ok = liveTrack(curAudio) && !curAudio.muted;
+  el.textContent = ok ? '音声あり' : '音声なし';
+  el.style.color = ok ? 'var(--sub)' : '#ff8f80';
+}
+
 async function startCam(){
   try {
-    if (stream) stream.getTracks().forEach(t => t.stop());
+    await ensureAudio();                                   // 先にマイクを確保する
+    if (stream) stream.getVideoTracks().forEach(t => t.stop());   // 映像だけ止める
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: cfg.facing, width:{ideal:1920}, height:{ideal:1080} }, audio: true });
+      video: { facingMode: cfg.facing, width:{ideal:1920}, height:{ideal:1080} } });
     srcVideo.srcObject = stream;
     await srcVideo.play();
+    await ensureAudio();                                   // 切替でマイクが落ちていたら取り直す
     camMsg.style.display = 'none';
     shoot.disabled = false;
     $('#flipLbl').textContent = cfg.facing === 'user' ? '前面' : '背面';
@@ -426,8 +464,8 @@ const stopLoop = () => { loopOn = false; };
 function startRecording(){
   if (!MIME) throw new Error('この端末では録画できません');
   const cs = cv.captureStream(FPS);
-  const at = stream && stream.getAudioTracks()[0];
-  if (at) { try { cs.addTrack(at); } catch (e) {} }
+  const at = liveTrack(curAudio) ? curAudio : (micStream && micStream.getAudioTracks()[0]);
+  if (liveTrack(at)) { at.enabled = true; try { cs.addTrack(at); } catch (e) {} }
   const rec = new MediaRecorder(cs, { mimeType:MIME, videoBitsPerSecond:VBPS });
   const chunks = [];
   rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
@@ -442,6 +480,18 @@ function startRecording(){
   rec.start();
   return { stop(){ if (rec.state !== 'inactive') rec.stop(); }, done, t0: performance.now() };
 }
+/* 録れた mp4 のトラック構成を実際に読む（サンプルは取り出さないので軽い） */
+function probeTracks(blob){
+  return blob.arrayBuffer().then(ab => {
+    ab.fileStart = 0;
+    const f = MP4Box.createFile();
+    let info = null;
+    f.onReady = (i) => { info = i; };
+    f.appendBuffer(ab); f.flush();
+    return info ? info.tracks.map(t => t.type) : [];
+  }).catch(() => []);
+}
+
 function makeThumb(){
   const t = document.createElement('canvas'); t.width = 180; t.height = 320;
   t.getContext('2d').drawImage(cv, 0, 0, 180, 320);
@@ -488,7 +538,12 @@ async function finishRec(){
   try { blob = await ctl.done; }
   catch (e) { toast(e.message); return resetShoot(); }
   const thumb = await thumbP;
-  pending = { dt: startedAt, blob, thumb, sec };
+  const types = await probeTracks(blob);
+  const hasAudio = types.includes('audio');
+  pending = { dt: startedAt, blob, thumb, sec, hasAudio };
+  $('#confAud').textContent = hasAudio ? `音声あり · ${sec.toFixed(1)}秒` : `音声なし · ${sec.toFixed(1)}秒`;
+  $('#confAud').style.color = hasAudio ? 'var(--sub)' : '#ff8f80';
+  if (!hasAudio) { ensureAudio(); toast('このクリップに音声が入っていません'); }
   cvid.src = URL.createObjectURL(blob);
   confirmEl.classList.add('on');
   cvid.play().catch(() => {});
@@ -508,10 +563,10 @@ function closeConfirm(){
 $('#retake').onclick = closeConfirm;
 $('#keep').onclick = async () => {
   if (!pending) return;
-  const { dt, blob, thumb, sec } = pending;
+  const { dt, blob, thumb, sec, hasAudio } = pending;
   const date = dateStrOf(dt);
   await putClip({ id: isoLocal(dt), date, time: timeStrOf(dt), blob, thumb,
-    w:CW, h:CH, fps:FPS, mime:CONTAINER, codec:MIME,
+    w:CW, h:CH, fps:FPS, mime:CONTAINER, codec:MIME, hasAudio,
     durationSec: Math.round(sec*100)/100, bytes: blob.size, createdAt: dt.getTime() });
   await bumpDay(date, +1);
   closeConfirm(); updateRecMeta();
@@ -555,7 +610,8 @@ async function fillDay(sec){
     const cell = document.createElement('div'); cell.className = 'cell';
     const u = URL.createObjectURL(c.thumb); urls.push(u);
     const dur = c.durationSec ? `<em>${c.durationSec.toFixed(1)}s</em>` : '';
-    cell.innerHTML = `<img src="${u}" alt=""><span>${c.time}</span>${dur}`;
+    const mute = c.hasAudio === false ? `<i>無音</i>` : '';
+    cell.innerHTML = `<img src="${u}" alt=""><span>${c.time}</span>${dur}${mute}`;
     cell.onclick = () => openPlayer(c);
     box.appendChild(cell);
   }
@@ -855,6 +911,9 @@ function renderSet(){
   seg($('#segPos'), Object.entries(POSS), cfg.pos, v => cfg.pos = v);
   seg($('#segFit'), Object.entries(FITS), cfg.fit, v => cfg.fit = v);
   $('#stMime').textContent = MIME || '非対応';
+  $('#stMic').textContent = liveTrack(curAudio)
+    ? `${curAudio.label || '既定'}${curAudio.muted ? '（ミュート中）' : ''}`
+    : '取得できていません';
   $('#stClips').textContent = Object.values(dayIndex).reduce((a,b)=>a+b,0) + ' 本';
   $('#stDays').textContent = Object.keys(dayIndex).length + ' 日';
   if (navigator.storage && navigator.storage.estimate) {
