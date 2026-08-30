@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>vlog</title>
+<style>
+:root{
+  --bg:#0e0f12; --panel:#17191f; --line:#2a2e37; --fg:#e9ecf1; --sub:#8d95a5;
+  --accent:#e8503a; --ok:#3ba55d;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+  overscroll-behavior:none}
+body{display:flex;flex-direction:column}
+
+#views{flex:1;min-height:0;position:relative}
+.view{position:absolute;inset:0;display:none;flex-direction:column}
+.view.on{display:flex}
+
+/* ---- tabbar ---- */
+#tabbar{display:flex;border-top:1px solid var(--line);background:var(--panel);
+  padding-bottom:var(--safe-b);flex:none}
+#tabbar button{flex:1;background:none;border:0;color:var(--sub);font-size:11px;
+  padding:9px 0 7px;display:flex;flex-direction:column;align-items:center;gap:3px}
+#tabbar button.on{color:var(--fg)}
+#tabbar .ic{font-size:17px;line-height:1}
+
+/* ---- rec ---- */
+#stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;
+  background:#000;position:relative;overflow:hidden}
+#cv{max-width:100%;max-height:100%;display:block}
+#camMsg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:14px;padding:24px;text-align:center;color:var(--sub);font-size:13px;line-height:1.7}
+#recbar{flex:none;background:var(--panel);border-top:1px solid var(--line);
+  padding:10px 14px calc(10px + var(--safe-b));display:flex;align-items:center;gap:12px}
+#shoot{width:66px;height:66px;border-radius:50%;border:4px solid #fff;background:var(--accent);
+  flex:none;position:relative;transition:transform .12s}
+#shoot:disabled{opacity:.4}
+#shoot.rec{background:#fff;transform:scale(.86)}
+#recmeta{flex:1;font-size:12px;color:var(--sub);line-height:1.6}
+#recmeta b{color:var(--fg);font-size:14px;font-variant-numeric:tabular-nums}
+.iconbtn{width:42px;height:42px;border-radius:50%;border:1px solid var(--line);
+  background:#20242c;color:var(--fg);font-size:17px;flex:none}
+#prog{position:absolute;left:0;right:0;top:0;height:3px;background:var(--accent);
+  width:0;transition:width .1s linear}
+
+/* ---- confirm ---- */
+#confirm{position:absolute;inset:0;background:#000;display:none;flex-direction:column;z-index:20}
+#confirm.on{display:flex}
+#cvid{flex:1;min-height:0;width:100%;object-fit:contain;background:#000}
+#confbar{flex:none;display:flex;gap:10px;padding:12px 14px calc(12px + var(--safe-b));background:var(--panel)}
+#confbar button{flex:1;padding:14px;border-radius:11px;border:0;font-size:15px;font-weight:600}
+#retake{background:#20242c;color:var(--fg)}
+#keep{background:var(--ok);color:#fff}
+
+/* ---- list ---- */
+#days{flex:none;display:flex;gap:8px;overflow-x:auto;padding:10px 12px;border-bottom:1px solid var(--line)}
+#days button{flex:none;background:#20242c;border:1px solid var(--line);color:var(--sub);
+  border-radius:9px;padding:7px 11px;font-size:12px;line-height:1.4;text-align:center}
+#days button.on{background:var(--fg);color:#111;border-color:var(--fg)}
+#days button small{display:block;font-size:10px;opacity:.8}
+#grid{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  display:grid;grid-template-columns:repeat(3,1fr);gap:5px;padding:10px;align-content:start}
+.cell{position:relative;aspect-ratio:9/16;border-radius:8px;overflow:hidden;background:#000}
+.cell img{width:100%;height:100%;object-fit:cover;display:block}
+.cell span{position:absolute;left:0;right:0;top:0;padding:4px 5px 12px;font-size:11px;
+  background:linear-gradient(rgba(0,0,0,.7),transparent);font-variant-numeric:tabular-nums}
+#empty{padding:40px 24px;color:var(--sub);font-size:13px;text-align:center;line-height:1.8}
+
+/* ---- player ---- */
+#player{position:fixed;inset:0;background:rgba(0,0,0,.94);display:none;
+  flex-direction:column;z-index:60}
+#player.on{display:flex}
+#pvid{flex:1;min-height:0;width:100%;object-fit:contain}
+#pbar{flex:none;display:flex;gap:10px;padding:12px 14px calc(12px + var(--safe-b))}
+#pbar button{flex:1;padding:13px;border-radius:11px;border:0;background:#20242c;color:var(--fg);font-size:14px}
+#pdel{background:#3a1f1f;color:#ff8f80}
+
+/* ---- settings ---- */
+#set{flex:1;overflow-y:auto;padding:14px 14px calc(24px + var(--safe-b))}
+.row{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:12px 14px;margin-bottom:10px}
+.row h3{margin:0 0 8px;font-size:12px;color:var(--sub);font-weight:600}
+.seg{display:flex;gap:6px;flex-wrap:wrap}
+.seg button{flex:1;min-width:64px;padding:9px 6px;border-radius:8px;border:1px solid var(--line);
+  background:#20242c;color:var(--sub);font-size:12px}
+.seg button.on{background:var(--fg);color:#111;border-color:var(--fg)}
+.stat{display:flex;justify-content:space-between;font-size:13px;padding:4px 0}
+.stat span:last-child{font-variant-numeric:tabular-nums}
+.danger{width:100%;padding:12px;border-radius:10px;border:1px solid #4a2a2a;
+  background:#2a1717;color:#ff8f80;font-size:13px;margin-top:6px}
+.note{font-size:11px;color:var(--sub);line-height:1.7;margin-top:8px}
+#toast{position:fixed;left:50%;bottom:calc(80px + var(--safe-b));transform:translateX(-50%);
+  background:#000d;border:1px solid var(--line);padding:10px 16px;border-radius:20px;
+  font-size:13px;z-index:99;opacity:0;transition:opacity .2s;pointer-events:none;white-space:nowrap}
+#toast.on{opacity:1}
+</style>
+</head>
+<body>
+
+<div id="views">
+
+  <!-- ============ 撮影 ============ -->
+  <section class="view on" id="v-rec">
+    <div id="stage">
+      <canvas id="cv" width="720" height="1280"></canvas>
+      <div id="camMsg">
+        <div>カメラを開始してください</div>
+        <button class="iconbtn" id="camStart" style="width:auto;padding:0 18px;height:40px;border-radius:20px;font-size:14px">カメラを開始</button>
+      </div>
+      <div id="prog"></div>
+    </div>
+    <div id="recbar">
+      <button class="iconbtn" id="flip" title="カメラ切替">⟲</button>
+      <button id="shoot" disabled></button>
+      <div id="recmeta"><b id="nowLbl">--</b><br><span id="todayLbl">本日 0本</span></div>
+    </div>
+    <div id="confirm">
+      <video id="cvid" playsinline muted loop></video>
+      <div id="confbar">
+        <button id="retake">撮り直し</button>
+        <button id="keep">保存</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 一覧 ============ -->
+  <section class="view" id="v-list">
+    <div id="days"></div>
+    <div id="grid"></div>
+    <div id="empty" style="display:none">まだクリップがありません。<br>撮影タブから2〜3秒撮ってみてください。</div>
+  </section>
+
+  <!-- ============ 設定 ============ -->
+  <section class="view" id="v-set">
+    <div id="set">
+      <div class="row">
+        <h3>録画秒数</h3>
+        <div class="seg" id="segDur"></div>
+      </div>
+      <div class="row">
+        <h3>日付の書式</h3>
+        <div class="seg" id="segFmt"></div>
+      </div>
+      <div class="row">
+        <h3>表示位置</h3>
+        <div class="seg" id="segPos"></div>
+      </div>
+      <div class="row">
+        <h3>映像の収め方</h3>
+        <div class="seg" id="segFit"></div>
+        <div class="note">切り抜き = 縦画面いっぱいに埋める / 全体 = 上下に黒帯を入れて全体を残す</div>
+      </div>
+      <div class="row">
+        <h3>録画方式</h3>
+        <div class="seg" id="segMode"></div>
+        <div class="note">
+          ライブ焼き込み: カメラ映像に日付を重ねながら直接録画（追加時間ゼロ・推奨）<br>
+          撮影後に焼く: 素で録ってから焼き直す。ライブ焼き込みが動かない端末向けのフォールバック（録画秒数と同じだけ待ち時間が増える）
+        </div>
+      </div>
+      <div class="row">
+        <h3>保存状況</h3>
+        <div class="stat"><span>クリップ数</span><span id="stClips">-</span></div>
+        <div class="stat"><span>記録日数</span><span id="stDays">-</span></div>
+        <div class="stat"><span>使用容量</span><span id="stUsage">-</span></div>
+        <div class="stat"><span>永続化</span><span id="stPersist">-</span></div>
+        <button class="danger" id="wipe">すべてのクリップを削除</button>
+      </div>
+      <div class="row">
+        <h3>録画設定（結合の互換性）</h3>
+        <div class="stat"><span>解像度</span><span>720 x 1280 固定</span></div>
+        <div class="stat"><span>フレームレート</span><span>30 fps 固定</span></div>
+        <div class="stat"><span>形式</span><span id="stMime">-</span></div>
+        <div class="note">全クリップを同一設定で録ることで、後の連結を再エンコードなし（無変換結合）で行えるようにしています。</div>
+      </div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.1 (Phase 1)</div>
+    </div>
+  </section>
+
+</div>
+
+<nav id="tabbar">
+  <button class="on" data-v="rec"><span class="ic">●</span>撮影</button>
+  <button data-v="list"><span class="ic">▦</span>一覧</button>
+  <button data-v="set"><span class="ic">⚙</span>設定</button>
+</nav>
+
+<div id="player">
+  <video id="pvid" playsinline controls></video>
+  <div id="pbar">
+    <button id="pclose">閉じる</button>
+    <button id="pdel">削除</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+/* ============================================================
+   定数：全クリップ共通の録画設定。
+   ここを固定することが「無変換結合（リマックス）」の前提条件になる。
+   ============================================================ */
+const CW = 720, CH = 1280, FPS = 30, VBPS = 2_000_000;
+
+const FMTS = {
+  ymd:  { label:'2026-08-30 09:00', fn:(d)=>`${d.y}-${d.m}-${d.d}  ${d.hh}:${d.mm}` },
+  md:   { label:'08/30 09:00',      fn:(d)=>`${d.m}/${d.d}  ${d.hh}:${d.mm}` },
+  slash:{ label:'2026/08/30 09:00', fn:(d)=>`${d.y}/${d.m}/${d.d}  ${d.hh}:${d.mm}` },
+};
+const POSS = { br:'右下', bl:'左下', tr:'右上', tl:'左上' };
+const FITS = { cover:'切り抜き', contain:'全体' };
+const MODES = { live:'ライブ焼き込み', post:'撮影後に焼く' };
+const DURS = [2, 2.5, 3];
+
+/* ---- 設定（localStorage） ---- */
+const DEF = { dur:2.5, fmt:'ymd', pos:'br', fit:'cover', mode:'live', facing:'environment' };
+let cfg = Object.assign({}, DEF, JSON.parse(localStorage.getItem('vlogCfg') || '{}'));
+const saveCfg = () => localStorage.setItem('vlogCfg', JSON.stringify(cfg));
+
+/* ---- DOM ---- */
+const $ = (s) => document.querySelector(s);
+const cv = $('#cv'), ctx = cv.getContext('2d');
+const camMsg = $('#camMsg'), shoot = $('#shoot'), prog = $('#prog');
+const confirmEl = $('#confirm'), cvid = $('#cvid');
+const player = $('#player'), pvid = $('#pvid');
+
+/* ---- util ---- */
+const pad = (n) => String(n).padStart(2, '0');
+function parts(dt){
+  return { y:dt.getFullYear(), m:pad(dt.getMonth()+1), d:pad(dt.getDate()),
+           hh:pad(dt.getHours()), mm:pad(dt.getMinutes()), ss:pad(dt.getSeconds()) };
+}
+const dateStrOf = (dt) => { const p = parts(dt); return `${p.y}-${p.m}-${p.d}`; };
+const timeStrOf = (dt) => { const p = parts(dt); return `${p.hh}:${p.mm}`; };
+function isoLocal(dt){
+  const p = parts(dt), off = -dt.getTimezoneOffset();
+  const sg = off >= 0 ? '+' : '-', a = Math.abs(off);
+  return `${p.y}-${p.m}-${p.d}T${p.hh}:${p.mm}:${p.ss}.${String(dt.getMilliseconds()).padStart(3,'0')}`
+       + `${sg}${pad(Math.floor(a/60))}:${pad(a%60)}`;
+}
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const fmtBytes = (b) => b == null ? '-' :
+  b > 1e9 ? (b/1e9).toFixed(2)+' GB' : b > 1e6 ? (b/1e6).toFixed(1)+' MB' : (b/1e3).toFixed(0)+' KB';
+let toastT;
+function toast(msg){
+  const t = $('#toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 1900);
+}
+
+/* ============================================================
+   IndexedDB
+   clips: { id, date, time, blob, thumb, w, h, fps, codec, mime, durationSec, createdAt }
+   meta : key 'dayIndex' -> { 'YYYY-MM-DD': count }
+   ============================================================ */
+let _db;
+function openDB(){
+  if (_db) return Promise.resolve(_db);
+  return new Promise((res, rej) => {
+    const rq = indexedDB.open('vlog-web', 1);
+    rq.onupgradeneeded = () => {
+      const db = rq.result;
+      const s = db.createObjectStore('clips', { keyPath:'id' });
+      s.createIndex('date', 'date', { unique:false });
+      db.createObjectStore('meta');
+    };
+    rq.onsuccess = () => { _db = rq.result; res(_db); };
+    rq.onerror = () => rej(rq.error);
+  });
+}
+function tx(store, mode){ return openDB().then(db => db.transaction(store, mode).objectStore(store)); }
+function req(r){ return new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+
+const getMeta = (k) => tx('meta','readonly').then(s => req(s.get(k)));
+const putMeta = (k, v) => tx('meta','readwrite').then(s => req(s.put(v, k)));
+
+let dayIndex = {};
+async function loadDayIndex(){ dayIndex = (await getMeta('dayIndex')) || {}; }
+async function bumpDay(d, n){
+  dayIndex[d] = Math.max(0, (dayIndex[d] || 0) + n);
+  if (!dayIndex[d]) delete dayIndex[d];
+  await putMeta('dayIndex', dayIndex);
+}
+const putClip = (c) => tx('clips','readwrite').then(s => req(s.put(c)));
+const delClip = (id) => tx('clips','readwrite').then(s => req(s.delete(id)));
+const clipsOfDay = (d) => tx('clips','readonly').then(s => req(s.index('date').getAll(IDBKeyRange.only(d))));
+
+/* ============================================================
+   MediaRecorder の形式判定
+   iOS Safari は video/mp4 (H.264+AAC)。webm は非対応。
+   ============================================================ */
+const MIME = (() => {
+  const cands = [
+    'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+    'video/mp4;codecs=avc1',
+    'video/mp4',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+  ];
+  for (const m of cands) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return '';
+})();
+const CONTAINER = MIME.split(';')[0] || 'video/mp4';
+
+/* ============================================================
+   カメラ
+   ============================================================ */
+let stream = null, srcVideo = document.createElement('video');
+srcVideo.playsInline = true; srcVideo.muted = true; srcVideo.setAttribute('playsinline','');
+
+async function startCam(){
+  try {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: cfg.facing, width:{ ideal:1920 }, height:{ ideal:1080 } },
+      audio: true,
+    });
+    srcVideo.srcObject = stream;
+    await srcVideo.play();
+    camMsg.style.display = 'none';
+    shoot.disabled = false;
+    startLoop();
+  } catch (e) {
+    camMsg.style.display = 'flex';
+    camMsg.innerHTML = `<div>カメラを開けませんでした<br><small style="color:#ff8f80">${e.name}: ${e.message}</small><br>`
+      + `${location.protocol === 'https:' ? 'カメラの許可を確認してください' : 'https でアクセスしてください（http ではカメラを使えません）'}</div>`;
+  }
+}
+
+/* ============================================================
+   描画：カメラ映像 → 720x1280 の canvas に収め、日付を焼き込む
+   ============================================================ */
+function drawFrame(src, dt){
+  const vw = src.videoWidth || src.naturalWidth, vh = src.videoHeight || src.naturalHeight;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, CW, CH);
+  if (vw && vh) {
+    const sc = cfg.fit === 'cover' ? Math.max(CW/vw, CH/vh) : Math.min(CW/vw, CH/vh);
+    const w = vw*sc, h = vh*sc;
+    ctx.drawImage(src, (CW-w)/2, (CH-h)/2, w, h);
+  }
+  drawStamp(dt);
+}
+
+function drawStamp(dt){
+  const text = FMTS[cfg.fmt].fn(parts(dt));
+  const fs = Math.round(CH * 0.04);
+  const padX = Math.round(CH * 0.03);
+  ctx.font = `600 ${fs}px -apple-system, "Hiragino Sans", sans-serif`;
+  ctx.textBaseline = 'alphabetic';
+  const right = cfg.pos === 'br' || cfg.pos === 'tr';
+  const bottom = cfg.pos === 'br' || cfg.pos === 'bl';
+  ctx.textAlign = right ? 'right' : 'left';
+  const x = right ? CW - padX : padX;
+  const y = bottom ? CH - padX : padX + fs;
+  ctx.shadowColor = 'rgba(0,0,0,.85)'; ctx.shadowBlur = Math.round(fs*0.3);
+  ctx.shadowOffsetX = 0; ctx.shadowOffsetY = Math.round(fs*0.05);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(text, x, y);
+  ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
+}
+
+let loopOn = false, stampAt = null;
+function startLoop(){
+  if (loopOn) return;
+  loopOn = true;
+  const tick = () => {
+    if (!loopOn) return;
+    drawFrame(srcVideo, stampAt || new Date());
+    requestAnimationFrame(tick);
+  };
+  tick();
+}
+function stopLoop(){ loopOn = false; }
+
+/* ============================================================
+   録画
+   ============================================================ */
+function recordCanvas(ms){
+  return new Promise((res, rej) => {
+    if (!MIME) return rej(new Error('この端末では MediaRecorder が使えません'));
+    let cs;
+    try { cs = cv.captureStream(FPS); }
+    catch (e) { return rej(new Error('canvas.captureStream が使えません（設定 → 録画方式 を「撮影後に焼く」に変更してください）')); }
+    const at = stream && stream.getAudioTracks()[0];
+    if (at) { try { cs.addTrack(at); } catch (e) {} }
+
+    let rec;
+    try { rec = new MediaRecorder(cs, { mimeType:MIME, videoBitsPerSecond:VBPS }); }
+    catch (e) { return rej(e); }
+
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onerror = (e) => rej(e.error || new Error('録画エラー'));
+    rec.onstop = () => {
+      cs.getVideoTracks().forEach(t => t.stop());
+      const blob = new Blob(chunks, { type:CONTAINER });
+      blob.size ? res(blob) : rej(new Error('録画結果が空でした（設定 → 録画方式 の変更を試してください）'));
+    };
+    rec.start();
+    const t0 = performance.now();
+    const timer = setInterval(() => {
+      prog.style.width = Math.min(100, (performance.now()-t0)/ms*100) + '%';
+    }, 50);
+    setTimeout(() => {
+      clearInterval(timer);
+      if (rec.state !== 'inactive') rec.stop();
+    }, ms);
+  });
+}
+
+/* 素のカメラ映像をそのまま録る（フォールバック用の1段目） */
+function recordRaw(ms){
+  return new Promise((res, rej) => {
+    let rec;
+    try { rec = new MediaRecorder(stream, { mimeType:MIME, videoBitsPerSecond:VBPS }); }
+    catch (e) { return rej(e); }
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onerror = (e) => rej(e.error || new Error('録画エラー'));
+    rec.onstop = () => {
+      const b = new Blob(chunks, { type:CONTAINER });
+      b.size ? res(b) : rej(new Error('録画結果が空でした'));
+    };
+    rec.start();
+    const t0 = performance.now();
+    const timer = setInterval(() => {
+      prog.style.width = Math.min(50, (performance.now()-t0)/ms*50) + '%';
+    }, 50);
+    setTimeout(() => { clearInterval(timer); if (rec.state !== 'inactive') rec.stop(); }, ms);
+  });
+}
+
+/* 録り終えた素材を再生しながら焼き直す（フォールバック用の2段目） */
+async function burnBlob(raw, dt){
+  const v = document.createElement('video');
+  v.playsInline = true; v.setAttribute('playsinline',''); v.muted = true;
+  v.src = URL.createObjectURL(raw);
+  await new Promise(r => { v.onloadedmetadata = r; });
+
+  const cs = cv.captureStream(FPS);
+  // 映像側の音声は WebAudio 経由で取り出す（Safari は video.captureStream 非対応）
+  let ac = null;
+  try {
+    ac = new (window.AudioContext || window.webkitAudioContext)();
+    const dest = ac.createMediaStreamDestination();
+    ac.createMediaElementSource(v).connect(dest);
+    const at = dest.stream.getAudioTracks()[0];
+    if (at) cs.addTrack(at);
+  } catch (e) { ac = null; }
+
+  const rec = new MediaRecorder(cs, { mimeType:MIME, videoBitsPerSecond:VBPS });
+  const chunks = [];
+  rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  const done = new Promise(r => { rec.onstop = r; });
+
+  stopLoop();
+  let on = true;
+  const tick = () => { if (!on) return; drawFrame(v, dt); requestAnimationFrame(tick); };
+
+  rec.start(); v.muted = false; await v.play(); tick();
+  const dur = (v.duration && isFinite(v.duration) ? v.duration : cfg.dur) * 1000;
+  const t0 = performance.now();
+  const timer = setInterval(() => {
+    prog.style.width = (50 + Math.min(50, (performance.now()-t0)/dur*50)) + '%';
+  }, 50);
+  await new Promise(r => { v.onended = r; setTimeout(r, dur + 800); });
+  clearInterval(timer);
+  on = false;
+  if (rec.state !== 'inactive') rec.stop();
+  await done;
+  cs.getVideoTracks().forEach(t => t.stop());
+  if (ac) try { ac.close(); } catch (e) {}
+  URL.revokeObjectURL(v.src);
+  startLoop();
+  return new Blob(chunks, { type:CONTAINER });
+}
+
+function makeThumb(){
+  const t = document.createElement('canvas');
+  t.width = 180; t.height = 320;
+  t.getContext('2d').drawImage(cv, 0, 0, 180, 320);
+  return new Promise(r => t.toBlob(r, 'image/jpeg', 0.72));
+}
+
+/* ---- 撮影フロー ---- */
+let pending = null, busy = false;
+
+shoot.onclick = async () => {
+  if (busy || shoot.disabled) return;
+  busy = true; shoot.classList.add('rec'); prog.style.width = '0';
+  const dt = new Date();
+  stampAt = dt;                    // 録画中は時刻を固定（クリップ内で分が変わらないように）
+  const ms = cfg.dur * 1000;
+  try {
+    const thumbP = sleep(120).then(makeThumb);
+    let blob;
+    if (cfg.mode === 'live') {
+      blob = await recordCanvas(ms);
+    } else {
+      const raw = await recordRaw(ms);
+      blob = await burnBlob(raw, dt);
+    }
+    const thumb = await thumbP;
+    pending = { dt, blob, thumb };
+    cvid.src = URL.createObjectURL(blob);
+    confirmEl.classList.add('on');
+    cvid.play().catch(() => {});
+  } catch (e) {
+    toast(e.message || String(e));
+  } finally {
+    busy = false; shoot.classList.remove('rec'); prog.style.width = '0'; stampAt = null;
+  }
+};
+
+function closeConfirm(){
+  confirmEl.classList.remove('on');
+  if (cvid.src) { cvid.pause(); URL.revokeObjectURL(cvid.src); cvid.removeAttribute('src'); }
+  pending = null;
+}
+$('#retake').onclick = closeConfirm;
+
+$('#keep').onclick = async () => {
+  if (!pending) return;
+  const { dt, blob, thumb } = pending;
+  const date = dateStrOf(dt);
+  await putClip({
+    id: isoLocal(dt), date, time: timeStrOf(dt),
+    blob, thumb, w:CW, h:CH, fps:FPS, mime:CONTAINER,
+    codec: MIME, durationSec: cfg.dur, createdAt: dt.getTime(),
+  });
+  await bumpDay(date, +1);
+  closeConfirm();
+  updateRecMeta();
+  toast('保存しました');
+};
+
+$('#flip').onclick = () => {
+  cfg.facing = cfg.facing === 'environment' ? 'user' : 'environment';
+  saveCfg(); startCam();
+};
+$('#camStart').onclick = startCam;
+
+function updateRecMeta(){
+  const now = new Date();
+  $('#nowLbl').textContent = FMTS[cfg.fmt].fn(parts(now));
+  const t = dateStrOf(now);
+  $('#todayLbl').textContent = `本日 ${dayIndex[t] || 0}本 / 全 ${Object.values(dayIndex).reduce((a,b)=>a+b,0)}本`;
+}
+setInterval(updateRecMeta, 10000);
+
+/* ============================================================
+   一覧
+   ============================================================ */
+let curDay = null, urls = [];
+function freeUrls(){ urls.forEach(URL.revokeObjectURL); urls = []; }
+
+async function renderList(){
+  const daysEl = $('#days'), grid = $('#grid');
+  const ds = Object.keys(dayIndex).sort().reverse();
+  $('#empty').style.display = ds.length ? 'none' : 'block';
+  daysEl.innerHTML = '';
+  if (!ds.length) { freeUrls(); grid.innerHTML = ''; return; }
+  if (!curDay || !dayIndex[curDay]) curDay = ds[0];
+  for (const d of ds) {
+    const b = document.createElement('button');
+    if (d === curDay) b.className = 'on';
+    b.innerHTML = `${d.slice(5).replace('-','/')}<small>${dayIndex[d]}本</small>`;
+    b.onclick = () => { curDay = d; renderList(); };
+    daysEl.appendChild(b);
+  }
+  const clips = (await clipsOfDay(curDay)).sort((a,b) => a.createdAt - b.createdAt);
+  freeUrls();
+  grid.innerHTML = '';
+  for (const c of clips) {
+    const cell = document.createElement('div'); cell.className = 'cell';
+    const u = URL.createObjectURL(c.thumb); urls.push(u);
+    cell.innerHTML = `<img src="${u}" alt=""><span>${c.time}</span>`;
+    cell.onclick = () => openPlayer(c);
+    grid.appendChild(cell);
+  }
+}
+
+let playing = null;
+function openPlayer(c){
+  playing = c;
+  pvid.src = URL.createObjectURL(c.blob);
+  player.classList.add('on');
+  pvid.play().catch(() => {});
+}
+$('#pclose').onclick = () => {
+  player.classList.remove('on'); pvid.pause();
+  if (pvid.src) URL.revokeObjectURL(pvid.src);
+  pvid.removeAttribute('src'); playing = null;
+};
+$('#pdel').onclick = async () => {
+  if (!playing || !confirm('このクリップを削除しますか？')) return;
+  await delClip(playing.id);
+  await bumpDay(playing.date, -1);
+  $('#pclose').onclick();
+  renderList(); updateRecMeta();
+  toast('削除しました');
+};
+
+/* ============================================================
+   設定
+   ============================================================ */
+function seg(el, items, cur, onPick){
+  el.innerHTML = '';
+  for (const [val, label] of items) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (String(val) === String(cur)) b.className = 'on';
+    b.onclick = () => { onPick(val); saveCfg(); renderSet(); updateRecMeta(); };
+    el.appendChild(b);
+  }
+}
+function renderSet(){
+  seg($('#segDur'),  DURS.map(d => [d, d + '秒']), cfg.dur, v => cfg.dur = Number(v));
+  seg($('#segFmt'),  Object.entries(FMTS).map(([k,v]) => [k, v.label]), cfg.fmt, v => cfg.fmt = v);
+  seg($('#segPos'),  Object.entries(POSS), cfg.pos, v => cfg.pos = v);
+  seg($('#segFit'),  Object.entries(FITS), cfg.fit, v => cfg.fit = v);
+  seg($('#segMode'), Object.entries(MODES), cfg.mode, v => cfg.mode = v);
+  $('#stMime').textContent = MIME || '非対応';
+  $('#stClips').textContent = Object.values(dayIndex).reduce((a,b)=>a+b,0) + ' 本';
+  $('#stDays').textContent = Object.keys(dayIndex).length + ' 日';
+  if (navigator.storage && navigator.storage.estimate) {
+    navigator.storage.estimate().then(e => {
+      $('#stUsage').textContent = fmtBytes(e.usage) + (e.quota ? ` / ${fmtBytes(e.quota)}` : '');
+    });
+  } else $('#stUsage').textContent = '不明';
+}
+$('#wipe').onclick = async () => {
+  if (!confirm('保存済みのクリップをすべて削除します。よろしいですか？')) return;
+  const s = await tx('clips','readwrite'); await req(s.clear());
+  dayIndex = {}; await putMeta('dayIndex', {});
+  curDay = null; renderList(); renderSet(); updateRecMeta();
+  toast('削除しました');
+};
+
+/* ============================================================
+   タブ
+   ============================================================ */
+document.querySelectorAll('#tabbar button').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('#tabbar button').forEach(x => x.classList.remove('on'));
+    document.querySelectorAll('.view').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    $('#v-' + b.dataset.v).classList.add('on');
+    if (b.dataset.v === 'list') renderList();
+    if (b.dataset.v === 'set') renderSet();
+    if (b.dataset.v === 'rec') { if (stream) startLoop(); } else stopLoop();
+  };
+});
+
+/* ============================================================
+   起動
+   ============================================================ */
+(async function init(){
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, CW, CH);
+  await loadDayIndex();
+  updateRecMeta();
+  if (navigator.storage && navigator.storage.persist) {
+    try {
+      const p = (await navigator.storage.persisted()) || (await navigator.storage.persist());
+      $('#stPersist').textContent = p ? '有効' : '未許可（7日未使用で消える可能性）';
+    } catch (e) { $('#stPersist').textContent = '不明'; }
+  } else $('#stPersist').textContent = '非対応';
+  if (!MIME) toast('この端末では録画できません（MediaRecorder 非対応）');
+})();
+</script>
+</body>
+</html>
