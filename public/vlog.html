@@ -234,9 +234,13 @@ body{display:flex;flex-direction:column}
         <div class="stat"><span>形式</span><span id="stMime">-</span></div>
         <div class="stat"><span>マイク</span><span id="stMic">-</span></div>
         <div class="stat"><span>使用中のカメラ</span><span id="stCam">-</span></div>
+        <div class="stat"><span>ズームの実現方法</span><span id="stZoom">-</span></div>
+        <div class="stat"><span>取り込み解像度</span><span id="stRes">-</span></div>
+        <div class="stat"><span>ズーム制約</span><span id="stCaps">-</span></div>
+        <div class="stat"><span>検出したレンズ</span><span id="stLens">-</span></div>
         <div class="note">全クリップを同一設定で録ることで、書き出し時の連結を再エンコードなし（無変換結合）で行っています。</div>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.3</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.4</div>
     </div>
   </section>
 
@@ -429,6 +433,7 @@ function updateAudioLbl(){
    ============================================================ */
 let cams = { user:{}, environment:{} };   // facing -> { wide, ultra, tele } の deviceId
 let digitalZoom = 1;
+let zoomMode = 'レンズ';                  // レンズ / センサー / デジタル
 let camsScanned = false;
 
 function classifyCam(label){
@@ -462,13 +467,30 @@ const zoomAvail = (z) => {
   return true;                       // 1倍は常に可。2倍は望遠かデジタルで必ず出せる
 };
 
-/* この倍率で使う deviceId と、足りない分のデジタル倍率を決める */
+/* この倍率で使う deviceId と、レンズだけでは足りない残りの倍率を返す。
+   残りは (1) センサークロップ = track の zoom 制約 (2) Canvas のデジタル拡大 の順で埋める。 */
 function pickCam(){
   const c = cams[cfg.facing] || {};
-  if (cfg.zoom === 0.5 && c.ultra) return { id:c.ultra, digital:1 };
-  if (cfg.zoom === 2 && c.tele)    return { id:c.tele,  digital:1 };
+  if (cfg.zoom === 0.5 && c.ultra) return { id:c.ultra, need:1, lens:true };
+  if (cfg.zoom === 2 && c.tele)    return { id:c.tele,  need:1, lens:true };
   const id = c.wide || c.multi || null;
-  return { id, digital: cfg.zoom === 0.5 ? 1 : cfg.zoom };   // 超広角が無ければ 0.5 は 1倍相当
+  // 超広角が無ければ 0.5 は 1倍相当（広角より広くは撮れない）
+  return { id, need: cfg.zoom === 0.5 ? 1 : cfg.zoom, lens: cfg.zoom === 1 };
+}
+
+/* センサークロップ。iPhone 無印の純正カメラの「2倍」はこれ（望遠レンズは無い）。
+   対応していれば applyConstraints({zoom}) で実際に適用された倍率が返る。 */
+async function applyNativeZoom(track, factor){
+  if (factor === 1 || !track || !track.getCapabilities) return 1;
+  try {
+    const caps = track.getCapabilities();
+    if (!caps || !caps.zoom || typeof caps.zoom.max !== 'number') return 1;
+    const z = Math.min(caps.zoom.max, Math.max(caps.zoom.min || 1, factor));
+    if (z <= 1) return 1;
+    await track.applyConstraints({ advanced: [{ zoom: z }] });
+    const got = track.getSettings && track.getSettings().zoom;
+    return (typeof got === 'number' && got > 0) ? got : z;
+  } catch (e) { return 1; }
 }
 
 function renderZoom(){
@@ -489,12 +511,9 @@ function renderZoom(){
 
 async function setZoom(z){
   if (!zoomAvail(z)) return toast('この端末の' + (cfg.facing === 'user' ? '前面' : '背面') + 'カメラに超広角はありません');
-  const before = pickCam();
   cfg.zoom = z; saveCfg();
-  const after = pickCam();
   renderZoom();
-  if (after.id !== before.id) await startCam();     // 物理カメラが変わるときだけ取り直す
-  else { digitalZoom = after.digital; }             // デジタルなら即座に反映
+  await startCam();   // レンズ・センサークロップ・解像度のどれも変わりうるので取り直す
 }
 
 async function startCam(){
@@ -502,17 +521,23 @@ async function startCam(){
     await ensureAudio();                                   // 先にマイクを確保する
     if (stream) stream.getVideoTracks().forEach(t => t.stop());   // 映像だけ止める
     const pick = pickCam();
+    // レンズだけで足りないときは、切り抜いても画素が残るよう高い解像度を要求する
+    const hi = pick.need > 1;
+    const size = { width:{ideal: hi ? 3840 : 1920}, height:{ideal: hi ? 2160 : 1080} };
     const v = pick.id
-      ? { deviceId:{ exact: pick.id }, width:{ideal:1920}, height:{ideal:1080} }
-      : { facingMode: cfg.facing, width:{ideal:1920}, height:{ideal:1080} };
+      ? Object.assign({ deviceId:{ exact: pick.id } }, size)
+      : Object.assign({ facingMode: cfg.facing }, size);
     try {
       stream = await navigator.mediaDevices.getUserMedia({ video: v });
     } catch (e) {
       // deviceId が使えない端末向けのフォールバック
       stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: cfg.facing, width:{ideal:1920}, height:{ideal:1080} } });
+        video: Object.assign({ facingMode: cfg.facing }, size) });
     }
-    digitalZoom = pick.digital;
+    const vtrack = stream.getVideoTracks()[0];
+    const native = await applyNativeZoom(vtrack, pick.need);   // センサークロップ
+    digitalZoom = pick.need / native;                          // 残りをデジタルで埋める
+    zoomMode = pick.lens ? 'レンズ' : native > 1 ? (digitalZoom > 1.02 ? 'センサー+デジタル' : 'センサー') : 'デジタル';
     srcVideo.srcObject = stream;
     await srcVideo.play();
     await ensureAudio();                                   // 切替でマイクが落ちていたら取り直す
@@ -1027,9 +1052,25 @@ function renderSet(){
     ? `${curAudio.label || '既定'}${curAudio.muted ? '（ミュート中）' : ''}`
     : '取得できていません';
   const vt = stream && stream.getVideoTracks()[0];
-  $('#stCam').textContent = vt
-    ? `${vt.label || '既定'}${digitalZoom !== 1 ? ` / デジタル${digitalZoom}倍` : ''}`
-    : '-';
+  if (vt) {
+    const st = (vt.getSettings && vt.getSettings()) || {};
+    $('#stCam').textContent = vt.label || '既定';
+    $('#stZoom').textContent = `${cfg.zoom}倍 = ${zoomMode}`
+      + (digitalZoom > 1.02 ? `（デジタル${digitalZoom.toFixed(1)}倍を含む）` : '');
+    $('#stRes').textContent = st.width && st.height ? `${st.width} x ${st.height}` : '不明';
+    let caps = null;
+    try { caps = vt.getCapabilities && vt.getCapabilities(); } catch (e) {}
+    $('#stCaps').textContent = caps && caps.zoom
+      ? `センサークロップ対応（${caps.zoom.min}〜${caps.zoom.max}倍）` : '非対応（デジタルで代替）';
+  } else {
+    $('#stCam').textContent = '-'; $('#stZoom').textContent = '-';
+    $('#stRes').textContent = '-'; $('#stCaps').textContent = '-';
+  }
+  const seen = [];
+  for (const f of ['environment','user']) {
+    for (const k of ['wide','ultra','tele','multi']) if (cams[f] && cams[f][k]) seen.push(`${f==='user'?'前':'背'}:${k}`);
+  }
+  $('#stLens').textContent = seen.length ? seen.join(' / ') : '未取得';
   $('#stClips').textContent = Object.values(dayIndex).reduce((a,b)=>a+b,0) + ' 本';
   $('#stDays').textContent = Object.keys(dayIndex).length + ' 日';
   if (navigator.storage && navigator.storage.estimate) {
