@@ -246,7 +246,7 @@ body{display:flex;flex-direction:column}
         <div class="stat"><span>検出したレンズ</span><span id="stLens">-</span></div>
         <div class="note">全クリップを同一設定で録ることで、書き出し時の連結を再エンコードなし（無変換結合）で行っています。</div>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.7</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.8</div>
     </div>
   </section>
 
@@ -288,7 +288,6 @@ body{display:flex;flex-direction:column}
 
 <div id="toast"></div>
 
-<script src="vendor/mp4box.all.min.js"></script>
 <script>
 'use strict';
 
@@ -623,14 +622,7 @@ function startRecording(){
 }
 /* 録れた mp4 のトラック構成を実際に読む（サンプルは取り出さないので軽い） */
 function probeTracks(blob){
-  return blob.arrayBuffer().then(ab => {
-    ab.fileStart = 0;
-    const f = MP4Box.createFile();
-    let info = null;
-    f.onReady = (i) => { info = i; };
-    f.appendBuffer(ab); f.flush();
-    return info ? info.tracks.map(t => t.type) : [];
-  }).catch(() => []);
+  return parseClip(blob).then(p => p ? p.tracks.map(t => t.kind) : []);
 }
 
 function makeThumb(){
@@ -822,40 +814,216 @@ $('#pdel').onclick = async () => {
    デコード・再エンコードを一切せず、H.264/AAC のサンプルを
    そのまま1本の mp4 に詰め直す。100本で 0.2 秒程度。
    ============================================================ */
-function demuxBlob(blob){
-  return blob.arrayBuffer().then(ab => {
-    ab.fileStart = 0;
-    const f = MP4Box.createFile();
-    const samples = [];
-    let info = null;
-    f.onReady = (i) => { info = i; i.tracks.forEach(t => f.setExtractionOptions(t.id, t.id, {nbSamples:100000})); f.start(); };
-    f.onSamples = (id, u, ss) => {
-      for (const x of ss) samples.push({ trak:id, data:x.data, duration:x.duration, cts:x.cts, dts:x.dts, is_sync:x.is_sync });
-    };
-    f.appendBuffer(ab); f.flush();
-    return info ? { info, samples, file:f } : null;
-  }).catch(() => null);
-}
-function cfgBytes(box){
-  const s = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
-  box.write(s);
-  return new Uint8Array(s.buffer, 8).slice();     // ボックスヘッダ8バイトを除く
-}
+/* サンプル記述から復号設定（avcC / esds）だけを取り出す。
+   btrt のようにクリップごとに変わる箱を含めると、
+   同じ設定なのに「別物」と判定してしまうため。 */
 const hex = (u8) => Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join('');
+function configOf(t){
+  if (!t.entry) return '';
+  const e = t.entry;
+  const dv = new DataView(e.buffer, e.byteOffset, e.byteLength);
+  let p = t.kind === 'video' ? 86 : 36;      // 視覚/音声のサンプル記述の固定部の長さ
+  while (p + 8 <= e.length) {
+    const size = dv.getUint32(p);
+    const type = String.fromCharCode(e[p+4], e[p+5], e[p+6], e[p+7]);
+    if (size < 8 || p + size > e.length) break;
+    if (type === 'avcC' || type === 'hvcC' || type === 'esds')
+      return type + ':' + hex(e.subarray(p+8, p+size));
+    p += size;
+  }
+  return '';
+}
 
 /* 結合できる組み合わせかを判定する署名。
-   MediaRecorder はクリップごとにトラックの並び順が変わる（音声が先のことも映像が先のこともある）ため、
-   並べ替えてから比較する。 */
-function sigOf(d){
-  return d.info.tracks.map(t => {
-    const e = d.file.getTrackById(t.id).mdia.minf.stbl.stsd.entries[0];
-    const base = `${t.type}:${e.type}:${t.timescale}`;
-    if (t.type === 'video') return `${base}:${t.video.width}x${t.video.height}:${hex(cfgBytes(e.avcC))}`;
-    if (t.type === 'audio') return `${base}:${t.audio.channel_count}:${t.audio.sample_rate}`;
-    return base;
+   トラックの並び順はクリップごとに変わるので、並べ替えてから比べる。 */
+function sigOf(parsed){
+  return parsed.tracks.map(t => {
+    const base = `${t.kind}:${t.entryType}:${t.timescale}:${configOf(t)}`;
+    return t.kind === 'video' ? `${base}:${t.width}x${t.height}` : base;
   }).sort().join('|');
 }
 
+/* ============================================================
+   mp4 の分解（自前）
+
+   mp4box.js は **1つの traf に trun が複数ある場合、2本目以降の
+   data_offset を無視して連続読み**してしまう。
+   iPhone の MediaRecorder は1クリップを4つの trun に分けて出力し、
+   mdat 内で映像と音声を交互に置くため、
+   「最初の trun のぶんだけ正しく、以降は全部ゴミ」という状態になっていた
+   （映像16本目以降が壊れる = 各クリップ 約0.5秒で絵が止まる）。
+   そのため分解も自前で行う。フラグメント形式と通常形式の両方に対応する。
+   ============================================================ */
+function parseMp4(u8){
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const boxes = (from, to, want) => {
+    const out = [];
+    let p = from;
+    while (p + 8 <= to) {
+      let size = dv.getUint32(p), hdr = 8;
+      const type = String.fromCharCode(u8[p+4], u8[p+5], u8[p+6], u8[p+7]);
+      if (size === 1) { size = Number(dv.getBigUint64(p+8)); hdr = 16; }
+      else if (size === 0) size = to - p;
+      if (size < hdr || p + size > to) break;
+      if (!want || want === type) out.push({ type, start:p, end:p+size, body:p+hdr });
+      p += size;
+    }
+    return out;
+  };
+  const first = (from, to, type) => boxes(from, to, type)[0] || null;
+
+  const moov = first(0, u8.length, 'moov');
+  if (!moov) return null;
+  const tracks = [], byId = {};
+
+  for (const trak of boxes(moov.body, moov.end, 'trak')) {
+    const tkhd = first(trak.body, trak.end, 'tkhd');
+    const mdia = first(trak.body, trak.end, 'mdia');
+    if (!tkhd || !mdia) continue;
+    const tver = u8[tkhd.body];
+    const id = dv.getUint32(tkhd.body + 4 + (tver === 1 ? 16 : 8));
+    const wpos = tkhd.body + 4 + (tver === 1 ? 16 : 8) + 4 + 4 + (tver === 1 ? 8 : 4) + 8 + 2 + 2 + 2 + 2 + 36;
+    const width = dv.getUint32(wpos) >>> 16, height = dv.getUint32(wpos + 4) >>> 16;
+
+    const mdhd = first(mdia.body, mdia.end, 'mdhd');
+    const mver = u8[mdhd.body];
+    const timescale = mver === 1 ? dv.getUint32(mdhd.body + 4 + 16) : dv.getUint32(mdhd.body + 4 + 8);
+    const hdlr = first(mdia.body, mdia.end, 'hdlr');
+    const h = String.fromCharCode(u8[hdlr.body+8], u8[hdlr.body+9], u8[hdlr.body+10], u8[hdlr.body+11]);
+    const kind = h === 'vide' ? 'video' : h === 'soun' ? 'audio' : h;
+
+    const minf = first(mdia.body, mdia.end, 'minf');
+    const stbl = minf && first(minf.body, minf.end, 'stbl');
+    const stsd = stbl && first(stbl.body, stbl.end, 'stsd');
+    let entry = null, entryType = '';
+    if (stsd) {
+      const e = boxes(stsd.body + 8, stsd.end)[0];
+      if (e) { entry = u8.slice(e.start, e.end); entryType = e.type; }
+    }
+    const t = { id, kind, timescale, entry, entryType, width, height, stbl, samples: [] };
+    tracks.push(t); byId[id] = t;
+  }
+
+  const mvex = first(moov.body, moov.end, 'mvex');
+  const trex = {};
+  if (mvex) for (const b of boxes(mvex.body, mvex.end, 'trex')) {
+    trex[dv.getUint32(b.body+4)] = { dur: dv.getUint32(b.body+12), size: dv.getUint32(b.body+16),
+                                     flags: dv.getUint32(b.body+20) };
+  }
+
+  // --- 通常形式（サンプルテーブル）---
+  for (const t of tracks) {
+    if (!t.stbl) continue;
+    const g = (ty) => first(t.stbl.body, t.stbl.end, ty);
+    const stts = g('stts'), stsz = g('stsz'), stsc = g('stsc'), stco = g('stco') || g('co64');
+    if (!stts || !stsz || !stsc || !stco) continue;
+    const durs = [];
+    const nStts = dv.getUint32(stts.body+4);
+    for (let i = 0, p = stts.body+8; i < nStts; i++, p += 8) {
+      const n = dv.getUint32(p), d = dv.getUint32(p+4);
+      for (let k = 0; k < n; k++) durs.push(d);
+    }
+    if (!durs.length) continue;
+    const fixed = dv.getUint32(stsz.body+4), n = dv.getUint32(stsz.body+8);
+    const sizes = [];
+    for (let i = 0; i < n; i++) sizes.push(fixed || dv.getUint32(stsz.body+12+i*4));
+    const ctts = g('ctts');
+    const offs = [];
+    if (ctts) {
+      const cv = u8[ctts.body], cn = dv.getUint32(ctts.body+4);
+      for (let i = 0, p = ctts.body+8; i < cn; i++, p += 8) {
+        const c = dv.getUint32(p), o = cv === 1 ? dv.getInt32(p+4) : dv.getUint32(p+4);
+        for (let k = 0; k < c; k++) offs.push(o);
+      }
+    }
+    const stss = g('stss');
+    let syncSet = null;
+    if (stss) { syncSet = new Set(); const sn = dv.getUint32(stss.body+4);
+      for (let i = 0; i < sn; i++) syncSet.add(dv.getUint32(stss.body+8+i*4)); }
+    const co64 = stco.type === 'co64', nCh = dv.getUint32(stco.body+4), chOff = [];
+    for (let i = 0; i < nCh; i++)
+      chOff.push(co64 ? Number(dv.getBigUint64(stco.body+8+i*8)) : dv.getUint32(stco.body+8+i*4));
+    const nSc = dv.getUint32(stsc.body+4), sc = [];
+    for (let i = 0, p = stsc.body+8; i < nSc; i++, p += 12)
+      sc.push({ first: dv.getUint32(p), per: dv.getUint32(p+4) });
+    let si = 0, dts = 0;
+    for (let c = 0; c < nCh && si < n; c++) {
+      let per = sc.length ? sc[0].per : 0;
+      for (let k = sc.length-1; k >= 0; k--) if (c+1 >= sc[k].first) { per = sc[k].per; break; }
+      let off = chOff[c];
+      for (let j = 0; j < per && si < n; j++, si++) {
+        t.samples.push({ offset:off, size:sizes[si], duration:durs[si] || 0,
+          dts, cts: dts + (offs[si] || 0), sync: syncSet ? syncSet.has(si+1) : true });
+        off += sizes[si]; dts += durs[si] || 0;
+      }
+    }
+  }
+
+  // --- フラグメント形式 ---
+  for (const moof of boxes(0, u8.length, 'moof')) {
+    let prevEnd = null;
+    for (const traf of boxes(moof.body, moof.end, 'traf')) {
+      const tfhd = first(traf.body, traf.end, 'tfhd');
+      if (!tfhd) continue;
+      let p = tfhd.body;
+      const fl = dv.getUint32(p) & 0xFFFFFF; p += 4;
+      const tid = dv.getUint32(p); p += 4;
+      const t = byId[tid];
+      let base = moof.start;
+      if (fl & 0x000001) { base = Number(dv.getBigUint64(p)); p += 8; }
+      else if (!(fl & 0x020000) && prevEnd != null) base = prevEnd;
+      if (fl & 0x000002) p += 4;
+      const dflt = trex[tid] || {};
+      let dDur = dflt.dur || 0, dSize = dflt.size || 0, dFlags = dflt.flags || 0;
+      if (fl & 0x000008) { dDur = dv.getUint32(p); p += 4; }
+      if (fl & 0x000010) { dSize = dv.getUint32(p); p += 4; }
+      if (fl & 0x000020) { dFlags = dv.getUint32(p); p += 4; }
+
+      const tfdt = first(traf.body, traf.end, 'tfdt');
+      let dts = 0;
+      if (tfdt) dts = u8[tfdt.body] === 1 ? Number(dv.getBigUint64(tfdt.body+4)) : dv.getUint32(tfdt.body+4);
+
+      let cursor = base;
+      for (const trun of boxes(traf.body, traf.end, 'trun')) {
+        let q = trun.body;
+        const ver = u8[q];
+        const tf = dv.getUint32(q) & 0xFFFFFF; q += 4;
+        const cnt = dv.getUint32(q); q += 4;
+        /* trun ごとの data_offset を必ず使う。ここを無視して連続読みすると
+           2本目以降の trun のサンプルが全部ずれる。 */
+        if (tf & 0x000001) { cursor = base + dv.getInt32(q); q += 4; }
+        let firstFlags = null;
+        if (tf & 0x000004) { firstFlags = dv.getUint32(q); q += 4; }
+        for (let i = 0; i < cnt; i++) {
+          let dur = dDur, size = dSize, flags = dFlags, cto = 0;
+          if (tf & 0x000100) { dur = dv.getUint32(q); q += 4; }
+          if (tf & 0x000200) { size = dv.getUint32(q); q += 4; }
+          if (tf & 0x000400) { flags = dv.getUint32(q); q += 4; }
+          if (tf & 0x000800) { cto = ver === 1 ? dv.getInt32(q) : dv.getUint32(q); q += 4; }
+          if (i === 0 && firstFlags != null) flags = firstFlags;
+          if (t) t.samples.push({ offset:cursor, size, duration:dur, dts, cts: dts + cto,
+                                  sync: !(flags & 0x00010000) });
+          cursor += size; dts += dur;
+        }
+      }
+      prevEnd = cursor;
+    }
+  }
+
+  for (const t of tracks) { delete t.stbl; t.samples.sort((a,b) => a.dts - b.dts); }
+  return { tracks: tracks.filter(t => t.samples.length) };
+}
+
+async function parseClip(blob){
+  try {
+    const u8 = new Uint8Array(await blob.arrayBuffer());
+    const r = parseMp4(u8);
+    if (!r || !r.tracks.length) return null;
+    for (const t of r.tracks)
+      for (const s of t.samples) s.data = u8.subarray(s.offset, s.offset + s.size);
+    return r;
+  } catch (e) { return null; }
+}
 
 /* ============================================================
    MP4 の組み立て（progressive / 非フラグメント）
@@ -1055,61 +1223,47 @@ async function mergeClips(clips, trimSec, onProg){
   for (let i = 0; i < clips.length; i++) {
     onProg(i / clips.length, `読み込み中 ${i+1} / ${clips.length}`);
     if (i % 8 === 0) await new Promise(r => setTimeout(r));   // UIを固まらせない
-    const d = await demuxBlob(clips[i].blob);
-    if (!d || !d.samples.length) { skipped++; continue; }
+    const d = await parseClip(clips[i].blob);
+    if (!d) { skipped++; continue; }
     const sig = sigOf(d);
 
     if (!tracks.length) {
       refSig = sig;
-      for (const t of d.info.tracks) {
-        if (t.type !== 'video' && t.type !== 'audio') continue;
-        const e = d.file.getTrackById(t.id).mdia.minf.stbl.stsd.entries[0];
-        const ds = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
-        e.write(ds);                                   // 元の avc1 / mp4a をそのまま使う
-        const tr = { kind:t.type, timescale:t.timescale, entry:new Uint8Array(ds.buffer),
-                     width: t.video ? t.video.width : 0, height: t.video ? t.video.height : 0,
-                     samples: [], chunks: [] };
-        outT[t.type] = tr;
+      for (const t of d.tracks) {
+        if (t.kind !== 'video' && t.kind !== 'audio') continue;
+        const tr = { kind:t.kind, timescale:t.timescale, entry:t.entry,
+                     width:t.width, height:t.height, samples: [], chunks: [] };
+        outT[t.kind] = tr;
         tracks.push(tr);
       }
       if (!outT.video) { tracks.length = 0; skipped++; continue; }
-      // 映像を先に並べる（再生時の読み出しが素直になる）
       tracks.sort((a,b) => (a.kind === 'video' ? 0 : 1) - (b.kind === 'video' ? 0 : 1));
     } else if (sig !== refSig) { skipped++; continue; }
 
-    /* トラックIDはクリップごとに映像/音声どちらを指すか変わるため、
-       必ず「種類」で対応付ける。IDで紐づけると映像を音声トラックに書き込んでしまう。 */
-    const typeOf = {};
-    for (const t of d.info.tracks) typeOf[t.id] = t.type;
-    const byType = {};
-    for (const s of d.samples) {
-      const ty = typeOf[s.trak];
-      if (outT[ty]) (byType[ty] ||= []).push(s);
-    }
+    const byKind = {};
+    for (const t of d.tracks) if (outT[t.kind]) byKind[t.kind] = t.samples;
 
-    /* 長さは各サンプルの duration の合計ではなく、DTS の実際の幅で測る。
-       元データのフレーム間に間隔が空いている場合、合計で測って詰め直すと
-       映像だけが縮んで「途中で切られた」ように見える。 */
-    const span = (arr) => (arr[arr.length-1].dts + arr[arr.length-1].duration) - arr[0].dts;
+    /* 長さは duration の合計ではなく DTS の実際の幅で測る。 */
+    const span = (a) => (a[a.length-1].dts + a[a.length-1].duration) - a[0].dts;
 
     // 必要なら先頭 trimSec 秒だけ残す
     let clipDur = 0;
-    for (const ty in byType) {
-      const ts = outT[ty].timescale;
+    for (const k in byKind) {
+      const ts = outT[k].timescale;
       if (trimSec) {
-        const lim = trimSec * ts, arr = byType[ty], base0 = arr[0].dts;
+        const lim = trimSec * ts, arr = byKind[k], base0 = arr[0].dts;
         const keep = [];
         for (const s of arr) { if (s.dts - base0 >= lim) break; keep.push(s); }
-        byType[ty] = keep.length ? keep : arr.slice(0,1);
+        byKind[k] = keep.length ? keep : arr.slice(0,1);
       }
-      clipDur = Math.max(clipDur, span(byType[ty]) / ts);
+      if (byKind[k].length) clipDur = Math.max(clipDur, span(byKind[k]) / ts);
     }
     if (!clipDur) { skipped++; continue; }
 
     /* 元の DTS の間隔を保って並べる。末尾はクリップ境界まで伸ばし、
        映像と音声を必ず揃える。 */
     for (const tr of tracks) {
-      const arr = byType[tr.kind];
+      const arr = byKind[tr.kind];
       if (!arr || !arr.length) continue;
       const ts = tr.timescale;
       const base = Math.round(baseSec * ts);
@@ -1119,12 +1273,10 @@ async function mergeClips(clips, trimSec, onProg){
       arr.forEach((s, k) => {
         const dts = base + (s.dts - first);
         const next = k < arr.length-1 ? base + (arr[k+1].dts - first) : endDts;
-        tr.samples.push({ data:s.data, size:s.data.byteLength,
-          duration: Math.max(1, next - dts), off: s.cts - s.dts, sync: !!s.is_sync });
+        tr.samples.push({ data:s.data, size:s.size,
+          duration: Math.max(1, next - dts), off: s.cts - s.dts, sync: !!s.sync });
       });
-      /* チャンクは stco と mdat の並びで同じ実体を使う。
-         別オブジェクトにすると位置を書き込んでも stco に反映されず、
-         全チャンクが mdat の先頭を指してしまい復号できなくなる。 */
+      /* チャンクは stco と mdat の並びで同じ実体を使う。 */
       const chunk = { from, count: tr.samples.length - from, offset: 0 };
       tr.chunks.push(chunk);
       order.push({ track: tr, chunk });
@@ -1140,19 +1292,15 @@ async function mergeClips(clips, trimSec, onProg){
 
   // 出力を読み直し、狙った長さになっているか自分で確かめる
   let actual = null;
-  try {
-    const chk = await demuxBlob(blob);
-    if (chk) {
-      actual = 0;
-      for (const t of chk.info.tracks) {
-        const ss = chk.samples.filter(x => x.trak === t.id);
-        if (ss.length) {
-          const last = ss[ss.length-1];
-          actual = Math.max(actual, ((last.dts + last.duration) - ss[0].dts) / t.timescale);
-        }
-      }
+  const chk = await parseClip(blob);
+  if (chk) {
+    actual = 0;
+    for (const t of chk.tracks) {
+      const ss = t.samples;
+      if (ss.length) actual = Math.max(actual,
+        ((ss[ss.length-1].dts + ss[ss.length-1].duration) - ss[0].dts) / t.timescale);
     }
-  } catch (e) {}
+  }
   return { blob, seconds: baseSec, used, skipped, actual };
 }
 
@@ -1275,26 +1423,33 @@ $('#go').onclick = async () => {
 /* クリップ1本ずつの実際の長さを測る。
    記録時の実時間・映像トラック・音声トラックがどれだけ食い違うかを見る。 */
 async function measureClip(blob){
-  const d = await demuxBlob(blob);
-  if (!d || !d.samples.length) return null;
+  const d = await parseClip(blob);
+  if (!d) return null;
   const per = {};
-  for (const t of d.info.tracks) {
-    const ss = d.samples.filter(x => x.trak === t.id);
+  for (const t of d.tracks) {
+    const ss = t.samples;
     if (!ss.length) continue;
     const last = ss[ss.length-1];
     const offs = ss.map(x => x.cts - x.dts);
     let mono = true;
     for (let i = 1; i < ss.length; i++) if (ss[i].dts < ss[i-1].dts) { mono = false; break; }
-    per[t.type] = {
+    // 映像は各サンプルの先頭4バイトが「その中に収まる長さ」になっているはず
+    let broken = 0;
+    if (t.kind === 'video') for (const x of ss) {
+      const b = x.data;
+      const n = b.length >= 4 ? ((b[0]<<24|b[1]<<16|b[2]<<8|b[3])>>>0) : 0;
+      if (!(n > 0 && n + 4 <= b.length)) broken++;
+    }
+    per[t.kind] = {
       n: ss.length,
       span: ((last.dts + last.duration) - ss[0].dts) / t.timescale,
       sum: ss.reduce((a,x)=>a+x.duration,0) / t.timescale,
-      sync: ss[0].is_sync,
-      keys: ss.filter(x => x.is_sync).length,
+      sync: ss[0].sync,
+      keys: ss.filter(x => x.sync).length,
       offMin: Math.min(...offs), offMax: Math.max(...offs),
-      mono,
-      codec: t.codec,
-      zero: ss.filter(x => !x.data || !x.data.byteLength).length,
+      mono, broken,
+      codec: t.entryType + (t.kind === 'video' ? ` ${t.width}x${t.height}` : ''),
+      zero: ss.filter(x => !x.data || !x.data.length).length,
     };
   }
   return { per, sig: sigOf(d) };
@@ -1323,6 +1478,7 @@ $('#diag').onclick = async () => {
     if (v && !v.mono) note.push('復号順が逆行している');
     if (v && v.keys > 1) note.push(`キーフレーム${v.keys}枚`);
     if (v && v.zero) note.push(`中身が空のコマ${v.zero}枚`);
+    if (v && v.broken) note.push(`読み取れないコマ${v.broken}枚`);
     if (note.length) bad++;
     lines.push(`${c.time}  ${(c.durationSec||0).toFixed(1)}s  `
       + `${v ? v.span.toFixed(2)+'s' : '  -  '}  ${a ? a.span.toFixed(2)+'s' : '  -  '}  `
