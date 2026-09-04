@@ -132,7 +132,13 @@ body{display:flex;flex-direction:column}
 #go:disabled{opacity:.5}
 #close{width:100%;margin-top:8px;padding:12px;border-radius:12px;border:0;
   background:transparent;color:var(--sub);font-size:13px}
-#pstat{font-size:12px;color:var(--sub);margin-top:10px;text-align:center;line-height:1.7;min-height:1.2em}
+#diag{width:100%;margin-top:10px;padding:11px;border-radius:10px;
+  border:1px solid var(--line);background:#20242c;color:var(--sub);font-size:12px}
+#diagout{display:none;margin:10px 0 0;padding:10px;background:#0e0f12;border:1px solid var(--line);
+  border-radius:8px;font-size:10.5px;line-height:1.65;color:var(--fg);
+  white-space:pre;overflow-x:auto;-webkit-overflow-scrolling:touch;max-height:44vh;overflow-y:auto}
+#diagout.on{display:block}
+#pstat{font-size:12px;color:var(--sub);margin-top:10px;text-align:center;line-height:1.7;min-height:1.2em;white-space:pre-line}
 #pbarw{height:4px;background:#20242c;border-radius:2px;margin-top:8px;overflow:hidden;display:none}
 #pbarf{height:100%;width:0;background:var(--ok);transition:width .15s}
 
@@ -240,7 +246,7 @@ body{display:flex;flex-direction:column}
         <div class="stat"><span>検出したレンズ</span><span id="stLens">-</span></div>
         <div class="note">全クリップを同一設定で録ることで、書き出し時の連結を再エンコードなし（無変換結合）で行っています。</div>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.4</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.5</div>
     </div>
   </section>
 
@@ -274,6 +280,8 @@ body{display:flex;flex-direction:column}
     <button id="go">書き出して保存</button>
     <div id="pbarw"><div id="pbarf"></div></div>
     <div id="pstat"></div>
+    <button id="diag">クリップの長さを調べる</button>
+    <pre id="diagout"></pre>
     <button id="close">閉じる</button>
   </div>
 </div>
@@ -872,32 +880,42 @@ async function mergeClips(clips, trimSec, onProg){
       if (outT[ty]) (byType[ty] ||= []).push(s);
     }
 
+    /* 長さは各サンプルの duration の合計ではなく、DTS の実際の幅で測る。
+       キャンバスの更新が遅れてフレームが飛ぶと、元データの DTS には間隔が空くが
+       duration の合計にはそれが現れない。合計で測って詰めて並べ直すと、
+       映像だけが縮んで「途中で切られた」ように見える。 */
+    const span = (arr) => {
+      const last = arr[arr.length-1];
+      return (last.dts + last.duration) - arr[0].dts;
+    };
+
     // 必要なら先頭 trimSec 秒だけ残す
     let clipDur = 0;
     for (const ty in byType) {
       const ts = outT[ty].ts;
-      let acc;
       if (trimSec) {
-        const lim = trimSec * ts;
-        const keep = []; acc = 0;
-        for (const s of byType[ty]) { if (acc >= lim) break; keep.push(s); acc += s.duration; }
-        byType[ty] = keep.length ? keep : byType[ty].slice(0,1);
+        const lim = trimSec * ts, arr = byType[ty], base0 = arr[0].dts;
+        const keep = [];
+        for (const s of arr) { if (s.dts - base0 >= lim) break; keep.push(s); }
+        byType[ty] = keep.length ? keep : arr.slice(0,1);
       }
-      acc = byType[ty].reduce((a,s)=>a+s.duration,0);
-      clipDur = Math.max(clipDur, acc / ts);
+      clipDur = Math.max(clipDur, span(byType[ty]) / ts);
     }
     if (!clipDur) { skipped++; continue; }
 
-    // 各トラックの末尾を伸ばして、クリップ境界で映像と音声を必ず揃える
+    /* 元の DTS の間隔をそのまま保って並べる。
+       末尾はクリップ境界まで伸ばし、映像と音声を必ず揃える。 */
     for (const ty in byType) {
       const { tid, ts } = outT[ty];
       const arr = byType[ty];
-      let dts = Math.round(baseSec * ts);
+      const base = Math.round(baseSec * ts);
       const endDts = Math.round((baseSec + clipDur) * ts);
+      const first = arr[0].dts;
       arr.forEach((s, k) => {
-        const dur = k === arr.length-1 ? Math.max(1, endDts - dts) : s.duration;
+        const dts = base + (s.dts - first);
+        const next = k < arr.length-1 ? base + (arr[k+1].dts - first) : endDts;
+        const dur = Math.max(1, next - dts);
         out.addSample(tid, s.data, { duration:dur, dts, cts: dts + (s.cts - s.dts), is_sync:s.is_sync });
-        dts += dur;
       });
     }
     baseSec += clipDur; used++;
@@ -915,7 +933,23 @@ async function mergeClips(clips, trimSec, onProg){
     tr.mdia.mdhd.duration = Math.round(baseSec * tr.mdia.mdhd.timescale);
   });
   const blob = new Blob([out.getBuffer()], { type:'video/mp4' });
-  return { blob, seconds: baseSec, used, skipped };
+
+  // 出力を読み直し、狙った長さになっているか自分で確かめる
+  let actual = null;
+  try {
+    const chk = await demuxBlob(blob);
+    if (chk) {
+      actual = 0;
+      for (const t of chk.info.tracks) {
+        const ss = chk.samples.filter(x => x.trak === t.id);
+        if (ss.length) {
+          const last = ss[ss.length-1];
+          actual = Math.max(actual, ((last.dts + last.duration) - ss[0].dts) / t.timescale);
+        }
+      }
+    }
+  } catch (e) {}
+  return { blob, seconds: baseSec, used, skipped, actual };
 }
 
 /* ---- 書き出しシート ---- */
@@ -943,6 +977,7 @@ function openSheet(kind, anchor){
   if (!exAnchor) return toast('クリップがありません');
   exTrim = kind === 'month' || kind === 'all' ? 1 : 0;
   $('#pstat').textContent = ''; $('#pbarw').style.display = 'none'; $('#pbarf').style.width = '0';
+  $('#diagout').classList.remove('on'); $('#diagout').textContent = '';
   $('#go').disabled = false;
   $('#sheet').classList.add('on');
   renderSheet();
@@ -1000,9 +1035,13 @@ $('#go').onclick = async () => {
   const onProg = (r, msg) => { $('#pbarf').style.width = Math.round(r*100)+'%'; $('#pstat').textContent = msg; };
   try {
     const t0 = performance.now();
-    const { blob, seconds, used, skipped } = await mergeClips(clips, exTrim, onProg);
+    const { blob, seconds, used, skipped, actual } = await mergeClips(clips, exTrim, onProg);
     const ms = Math.round(performance.now() - t0);
-    onProg(1, `完成: ${fmtSec(seconds)} / ${fmtBytes(blob.size)}（${ms}ms）`);
+    const gap = actual == null ? 0 : Math.abs(actual - seconds);
+    const want = clips.reduce((a,c) => a + (exTrim ? Math.min(exTrim, c.durationSec||0) : (c.durationSec||0)), 0);
+    onProg(1, `完成: ${fmtSec(seconds)} / ${fmtBytes(blob.size)}（${ms}ms）`
+      + (gap > 0.5 ? ` / 検証: 実際は ${fmtSec(actual)}` : '')
+      + (Math.abs(want - seconds) > 1 ? `\n記録時間の合計 ${fmtSec(want)} より ${fmtSec(Math.abs(want-seconds))} 短くなっています。「クリップの長さを調べる」で原因を確認してください` : ''));
 
     const name = `vlog_${exAnchor.replace(/-/g,'')}_${exKind}.mp4`;
     const file = new File([blob], name, { type:'video/mp4' });
@@ -1027,6 +1066,55 @@ $('#go').onclick = async () => {
   } finally {
     exBusy = false; $('#go').disabled = false;
   }
+};
+
+/* クリップ1本ずつの実際の長さを測る。
+   記録時の実時間・映像トラック・音声トラックがどれだけ食い違うかを見る。 */
+async function measureClip(blob){
+  const d = await demuxBlob(blob);
+  if (!d || !d.samples.length) return null;
+  const per = {};
+  for (const t of d.info.tracks) {
+    const ss = d.samples.filter(x => x.trak === t.id);
+    if (!ss.length) continue;
+    const last = ss[ss.length-1];
+    per[t.type] = {
+      n: ss.length,
+      span: ((last.dts + last.duration) - ss[0].dts) / t.timescale,
+      sum: ss.reduce((a,x)=>a+x.duration,0) / t.timescale,
+      sync: ss[0].is_sync,
+    };
+  }
+  return { per, sig: sigOf(d) };
+}
+
+$('#diag').onclick = async () => {
+  const clips = window.__exClips || [];
+  const el = $('#diagout');
+  el.classList.add('on');
+  if (!clips.length) { el.textContent = '対象のクリップがありません'; return; }
+  el.textContent = '調べています…';
+  const lines = ['時刻    記録   映像   音声  枚数  備考'];
+  let refSig = null, bad = 0;
+  for (const c of clips) {
+    const m = await measureClip(c.blob);
+    if (!m) { lines.push(`${c.time}  解析できません`); bad++; continue; }
+    if (!refSig) refSig = m.sig;
+    const v = m.per.video, a = m.per.audio;
+    const note = [];
+    if (m.sig !== refSig) note.push('設定違い(除外される)');
+    if (!a) note.push('音声なし');
+    if (v && !v.sync) note.push('先頭がキーフレームでない');
+    if (v && a && Math.abs(v.span - a.span) > 0.3) note.push('映像と音声の長さが違う');
+    if (v && c.durationSec && Math.abs(v.span - c.durationSec) > 0.3) note.push('記録時間と映像が違う');
+    if (note.length) bad++;
+    lines.push(`${c.time}  ${(c.durationSec||0).toFixed(1)}s  `
+      + `${v ? v.span.toFixed(2)+'s' : '  -  '}  ${a ? a.span.toFixed(2)+'s' : '  -  '}  `
+      + `${v ? String(v.n).padStart(3) : '  -'}  ${note.join(' / ')}`);
+  }
+  lines.push('');
+  lines.push(bad ? `気になる行が ${bad} 本あります` : 'すべて記録時間どおりです');
+  el.textContent = lines.join('\n');
 };
 
 /* ============================================================
