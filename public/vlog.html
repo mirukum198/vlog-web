@@ -246,7 +246,7 @@ body{display:flex;flex-direction:column}
         <div class="stat"><span>検出したレンズ</span><span id="stLens">-</span></div>
         <div class="note">全クリップを同一設定で録ることで、書き出し時の連結を再エンコードなし（無変換結合）で行っています。</div>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.5</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.6</div>
     </div>
   </section>
 
@@ -841,10 +841,198 @@ function sigOf(d){
   }).sort().join('|');
 }
 
+
+/* ============================================================
+   MP4 の組み立て（progressive / 非フラグメント）
+
+   mp4box.js の addSample は **サンプル1本ごとに moof + mdat を作る**。
+   Safari の <video> は正しく読むが、写真アプリ（AVFoundation）は
+   この構造の長さを二重に数え、実際の倍の尺の動画になってしまう
+   （映像が終わったあと最後のコマが固まったまま残る）。
+   そのため、通常のサンプルテーブル（stbl）と単一の mdat を持つ
+   mp4 を自前で書き出す。
+   ============================================================ */
+class BW {
+  constructor(){ this.buf = new Uint8Array(1 << 16); this.len = 0; }
+  need(n){
+    if (this.len + n <= this.buf.length) return;
+    let cap = this.buf.length;
+    while (cap < this.len + n) cap *= 2;
+    const nb = new Uint8Array(cap);
+    nb.set(this.buf.subarray(0, this.len));
+    this.buf = nb;
+  }
+  u8(v){ this.need(1); this.buf[this.len++] = v & 255; }
+  u16(v){ this.need(2); this.buf[this.len++] = (v>>>8)&255; this.buf[this.len++] = v&255; }
+  u32(v){ this.need(4); this.buf[this.len++] = (v>>>24)&255; this.buf[this.len++] = (v>>>16)&255;
+          this.buf[this.len++] = (v>>>8)&255; this.buf[this.len++] = v&255; }
+  bytes(a){ this.need(a.length); this.buf.set(a, this.len); this.len += a.length; }
+  tag(t){ this.bytes([t.charCodeAt(0),t.charCodeAt(1),t.charCodeAt(2),t.charCodeAt(3)]); }
+  open(t){ const at = this.len; this.u32(0); this.tag(t); return at; }
+  close(at){
+    const n = this.len - at;
+    this.buf[at] = (n>>>24)&255; this.buf[at+1] = (n>>>16)&255;
+    this.buf[at+2] = (n>>>8)&255; this.buf[at+3] = n&255;
+  }
+  full(t, ver, flags){ const at = this.open(t); this.u8(ver); this.u8((flags>>>16)&255);
+    this.u8((flags>>>8)&255); this.u8(flags&255); return at; }
+  out(){ return this.buf.slice(0, this.len); }
+}
+
+const UNITY = [0x00010000,0,0, 0,0x00010000,0, 0,0,0x40000000];
+const MVTS = 1000;                        // ムービー全体の時間単位
+
+function writeStbl(w, t, mdatStart){
+  const at = w.open('stbl');
+
+  const sd = w.full('stsd', 0, 0); w.u32(1); w.bytes(t.entry); w.close(sd);
+
+  // stts: 同じ長さのサンプルをまとめる
+  const runs = [];
+  for (const s of t.samples) {
+    const last = runs[runs.length-1];
+    if (last && last[1] === s.duration) last[0]++;
+    else runs.push([1, s.duration]);
+  }
+  const stts = w.full('stts', 0, 0); w.u32(runs.length);
+  for (const [n, d] of runs) { w.u32(n); w.u32(d); }
+  w.close(stts);
+
+  // ctts: 表示順がずれるサンプルがある場合だけ書く
+  if (t.samples.some(s => s.off !== 0)) {
+    const cruns = [];
+    for (const s of t.samples) {
+      const last = cruns[cruns.length-1];
+      if (last && last[1] === s.off) last[0]++;
+      else cruns.push([1, s.off]);
+    }
+    const ctts = w.full('ctts', 0, 0); w.u32(cruns.length);
+    for (const [n, o] of cruns) { w.u32(n); w.u32(o); }
+    w.close(ctts);
+  }
+
+  // stss: 全部がキーフレームなら省略できる
+  if (t.kind === 'video' && t.samples.some(s => !s.sync)) {
+    const idx = [];
+    t.samples.forEach((s, i) => { if (s.sync) idx.push(i+1); });
+    const stss = w.full('stss', 0, 0); w.u32(idx.length);
+    for (const i of idx) w.u32(i);
+    w.close(stss);
+  }
+
+  // stsc: 1チャンクあたりのサンプル数が変わるところだけ記録する
+  const sc = [];
+  t.chunks.forEach((c, j) => {
+    if (!sc.length || sc[sc.length-1][1] !== c.count) sc.push([j+1, c.count, 1]);
+  });
+  const stsc = w.full('stsc', 0, 0); w.u32(sc.length);
+  for (const [f, n, d] of sc) { w.u32(f); w.u32(n); w.u32(d); }
+  w.close(stsc);
+
+  const stsz = w.full('stsz', 0, 0); w.u32(0); w.u32(t.samples.length);
+  for (const s of t.samples) w.u32(s.size);
+  w.close(stsz);
+
+  const stco = w.full('stco', 0, 0); w.u32(t.chunks.length);
+  for (const c of t.chunks) w.u32(mdatStart + c.offset);
+  w.close(stco);
+
+  w.close(at);
+}
+
+function writeTrak(w, t, id, movieDur){
+  const at = w.open('trak');
+
+  const tkhd = w.full('tkhd', 0, 3);
+  w.u32(0); w.u32(0); w.u32(id); w.u32(0);
+  w.u32(Math.round(movieDur * MVTS));
+  w.u32(0); w.u32(0);
+  w.u16(0); w.u16(0);
+  w.u16(t.kind === 'audio' ? 0x0100 : 0); w.u16(0);
+  for (const m of UNITY) w.u32(m);
+  w.u32(t.kind === 'video' ? (t.width << 16) : 0);
+  w.u32(t.kind === 'video' ? (t.height << 16) : 0);
+  w.close(tkhd);
+
+  const mdia = w.open('mdia');
+  const mdhd = w.full('mdhd', 0, 0);
+  w.u32(0); w.u32(0); w.u32(t.timescale);
+  w.u32(t.samples.reduce((a,s) => a + s.duration, 0));
+  w.u16(0x55C4); w.u16(0);                      // 言語 'und'
+  w.close(mdhd);
+
+  const hdlr = w.full('hdlr', 0, 0);
+  w.u32(0); w.tag(t.kind === 'video' ? 'vide' : 'soun');
+  w.u32(0); w.u32(0); w.u32(0);
+  const name = t.kind === 'video' ? 'VideoHandler' : 'SoundHandler';
+  for (let i = 0; i < name.length; i++) w.u8(name.charCodeAt(i));
+  w.u8(0);
+  w.close(hdlr);
+
+  const minf = w.open('minf');
+  if (t.kind === 'video') { const b = w.full('vmhd', 0, 1); w.u16(0); w.u16(0); w.u16(0); w.u16(0); w.close(b); }
+  else { const b = w.full('smhd', 0, 0); w.u16(0); w.u16(0); w.close(b); }
+  const dinf = w.open('dinf');
+  const dref = w.full('dref', 0, 0); w.u32(1);
+  const url = w.full('url ', 0, 1); w.close(url);
+  w.close(dref); w.close(dinf);
+  writeStbl(w, t, w.mdatStart);
+  w.close(minf);
+
+  w.close(mdia);
+  w.close(at);
+}
+
+/* ヘッダ（ftyp + moov）を組み立てる。
+   stco にはファイル先頭からの位置を書くので、
+   ヘッダ長が決まらないと中身が決まらない。長さは中身に依存しないため2回組む。 */
+function buildHeader(tracks, movieDur, mdatStart){
+  const w = new BW();
+  w.mdatStart = mdatStart;
+  const ftyp = w.open('ftyp');
+  w.tag('isom'); w.u32(0x200);
+  for (const b of ['isom','iso2','avc1','mp41']) w.tag(b);
+  w.close(ftyp);
+
+  const moov = w.open('moov');
+  const mvhd = w.full('mvhd', 0, 0);
+  w.u32(0); w.u32(0); w.u32(MVTS); w.u32(Math.round(movieDur * MVTS));
+  w.u32(0x00010000); w.u16(0x0100); w.u16(0); w.u32(0); w.u32(0);
+  for (const m of UNITY) w.u32(m);
+  for (let i = 0; i < 6; i++) w.u32(0);
+  w.u32(tracks.length + 1);
+  w.close(mvhd);
+  tracks.forEach((t, i) => writeTrak(w, t, i+1, movieDur));
+  w.close(moov);
+  return w.out();
+}
+
+function buildMp4(tracks, order, movieDur){
+  // mdat 内の並び順を決めて、各チャンクの位置を確定する
+  let off = 0;
+  const parts = [];
+  for (const { track, chunk } of order) {
+    chunk.offset = off;
+    for (let i = chunk.from; i < chunk.from + chunk.count; i++) {
+      parts.push(track.samples[i].data);
+      off += track.samples[i].size;
+    }
+  }
+  const mdatSize = off;
+  const probe = buildHeader(tracks, movieDur, 0);          // 長さを測るための仮組み
+  const mdatStart = probe.length + 8;
+  const head = buildHeader(tracks, movieDur, mdatStart);   // 本番
+  const mdatHead = new Uint8Array(8);
+  new DataView(mdatHead.buffer).setUint32(0, mdatSize + 8);
+  mdatHead.set([0x6d,0x64,0x61,0x74], 4);                  // 'mdat'
+  return new Blob([head, mdatHead, ...parts], { type:'video/mp4' });
+}
+
 async function mergeClips(clips, trimSec, onProg){
-  let out = null, refSig = null;
-  const outT = {};                 // 'video' / 'audio' -> { tid, ts }
-  let baseSec = 0, used = 0, skipped = 0;
+  const tracks = [];               // 出力トラック（映像・音声）
+  const outT = {};                 // 'video' / 'audio' -> トラック
+  const order = [];                // mdat に並べる順（クリップごと・トラックごと）
+  let refSig = null, baseSec = 0, used = 0, skipped = 0;
 
   for (let i = 0; i < clips.length; i++) {
     onProg(i / clips.length, `読み込み中 ${i+1} / ${clips.length}`);
@@ -853,21 +1041,22 @@ async function mergeClips(clips, trimSec, onProg){
     if (!d || !d.samples.length) { skipped++; continue; }
     const sig = sigOf(d);
 
-    if (!out) {
+    if (!tracks.length) {
       refSig = sig;
-      out = MP4Box.createFile();
       for (const t of d.info.tracks) {
+        if (t.type !== 'video' && t.type !== 'audio') continue;
         const e = d.file.getTrackById(t.id).mdia.minf.stbl.stsd.entries[0];
-        if (t.type === 'video') {
-          outT.video = { ts:t.timescale, tid: out.addTrack({ type:'avc1', hdlr:'vide',
-            timescale:t.timescale, width:t.video.width, height:t.video.height,
-            avcDecoderConfigRecord: cfgBytes(e.avcC).buffer }) };
-        } else if (t.type === 'audio') {
-          outT.audio = { ts:t.timescale, tid: out.addTrack({ type:'mp4a', hdlr:'soun',
-            timescale:t.timescale, channel_count:t.audio.channel_count,
-            samplerate:t.audio.sample_rate, samplesize:t.audio.sample_size, description:e.esds }) };
-        }
+        const ds = new DataStream(undefined, 0, DataStream.BIG_ENDIAN);
+        e.write(ds);                                   // 元の avc1 / mp4a をそのまま使う
+        const tr = { kind:t.type, timescale:t.timescale, entry:new Uint8Array(ds.buffer),
+                     width: t.video ? t.video.width : 0, height: t.video ? t.video.height : 0,
+                     samples: [], chunks: [] };
+        outT[t.type] = tr;
+        tracks.push(tr);
       }
+      if (!outT.video) { tracks.length = 0; skipped++; continue; }
+      // 映像を先に並べる（再生時の読み出しが素直になる）
+      tracks.sort((a,b) => (a.kind === 'video' ? 0 : 1) - (b.kind === 'video' ? 0 : 1));
     } else if (sig !== refSig) { skipped++; continue; }
 
     /* トラックIDはクリップごとに映像/音声どちらを指すか変わるため、
@@ -881,18 +1070,14 @@ async function mergeClips(clips, trimSec, onProg){
     }
 
     /* 長さは各サンプルの duration の合計ではなく、DTS の実際の幅で測る。
-       キャンバスの更新が遅れてフレームが飛ぶと、元データの DTS には間隔が空くが
-       duration の合計にはそれが現れない。合計で測って詰めて並べ直すと、
+       元データのフレーム間に間隔が空いている場合、合計で測って詰め直すと
        映像だけが縮んで「途中で切られた」ように見える。 */
-    const span = (arr) => {
-      const last = arr[arr.length-1];
-      return (last.dts + last.duration) - arr[0].dts;
-    };
+    const span = (arr) => (arr[arr.length-1].dts + arr[arr.length-1].duration) - arr[0].dts;
 
     // 必要なら先頭 trimSec 秒だけ残す
     let clipDur = 0;
     for (const ty in byType) {
-      const ts = outT[ty].ts;
+      const ts = outT[ty].timescale;
       if (trimSec) {
         const lim = trimSec * ts, arr = byType[ty], base0 = arr[0].dts;
         const keep = [];
@@ -903,36 +1088,37 @@ async function mergeClips(clips, trimSec, onProg){
     }
     if (!clipDur) { skipped++; continue; }
 
-    /* 元の DTS の間隔をそのまま保って並べる。
-       末尾はクリップ境界まで伸ばし、映像と音声を必ず揃える。 */
-    for (const ty in byType) {
-      const { tid, ts } = outT[ty];
-      const arr = byType[ty];
+    /* 元の DTS の間隔を保って並べる。末尾はクリップ境界まで伸ばし、
+       映像と音声を必ず揃える。 */
+    for (const tr of tracks) {
+      const arr = byType[tr.kind];
+      if (!arr || !arr.length) continue;
+      const ts = tr.timescale;
       const base = Math.round(baseSec * ts);
       const endDts = Math.round((baseSec + clipDur) * ts);
       const first = arr[0].dts;
+      const from = tr.samples.length;
       arr.forEach((s, k) => {
         const dts = base + (s.dts - first);
         const next = k < arr.length-1 ? base + (arr[k+1].dts - first) : endDts;
-        const dur = Math.max(1, next - dts);
-        out.addSample(tid, s.data, { duration:dur, dts, cts: dts + (s.cts - s.dts), is_sync:s.is_sync });
+        tr.samples.push({ data:s.data, size:s.data.byteLength,
+          duration: Math.max(1, next - dts), off: s.cts - s.dts, sync: !!s.is_sync });
       });
+      /* チャンクは stco と mdat の並びで同じ実体を使う。
+         別オブジェクトにすると位置を書き込んでも stco に反映されず、
+         全チャンクが mdat の先頭を指してしまい復号できなくなる。 */
+      const chunk = { from, count: tr.samples.length - from, offset: 0 };
+      tr.chunks.push(chunk);
+      order.push({ track: tr, chunk });
     }
     baseSec += clipDur; used++;
   }
 
-  if (!out || !used) throw new Error('結合できるクリップがありませんでした');
+  if (!tracks.length || !used) throw new Error('結合できるクリップがありませんでした');
 
-  // duration を明示的に埋める（写真アプリが長さを正しく読めるように）
   onProg(0.9, 'mp4 を組み立て中');
   await new Promise(r => setTimeout(r));
-  const mvts = out.moov.mvhd.timescale;
-  out.moov.mvhd.duration = Math.round(baseSec * mvts);
-  out.moov.traks.forEach(tr => {
-    tr.tkhd.duration = Math.round(baseSec * mvts);
-    tr.mdia.mdhd.duration = Math.round(baseSec * tr.mdia.mdhd.timescale);
-  });
-  const blob = new Blob([out.getBuffer()], { type:'video/mp4' });
+  const blob = buildMp4(tracks, order, baseSec);
 
   // 出力を読み直し、狙った長さになっているか自分で確かめる
   let actual = null;
