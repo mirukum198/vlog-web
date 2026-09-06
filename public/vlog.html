@@ -260,7 +260,7 @@ body{display:flex;flex-direction:column}
         </div>
         <pre id="logOut"></pre>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.12</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.13</div>
     </div>
   </section>
 
@@ -605,19 +605,19 @@ async function startCam(force){
     renderZoom();
     startLoop();
     logEvent('カメラ開始', trackInfo());
-    if (force) {
-      const ok = await selfTest();
-      logEvent('録画の自己診断', ok ? '正常' : '異常');
-      if (!ok && camRetry < 1) {
-        camRetry++;
-        logEvent('自己診断が通らないため取り直す');
-        if (micStream) micStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
-        micStream = null; curAudio = null;
-        return startCam(true);
-      }
-      camRetry = 0;
-      if (!ok) toast('カメラの調子が戻りません。アプリを開き直してください');
+    /* 復帰時だけでなく、ズームやカメラ切替の直後も壊れた状態になりうるため
+       開くたびに検査する。 */
+    const ok = await selfTest();
+    logEvent('録画の自己診断', ok ? '正常' : '異常');
+    if (!ok && camRetry < 1) {
+      camRetry++;
+      logEvent('自己診断が通らないため取り直す');
+      if (micStream) micStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
+      micStream = null; curAudio = null;
+      return startCam(true);
     }
+    camRetry = 0;
+    if (!ok) toast('カメラの調子が戻りません。アプリを開き直してください');
   } catch (e) {
     logEvent('カメラを開けず', e.name + ': ' + e.message);
     camMsg.style.display = 'flex';
@@ -675,6 +675,10 @@ const drawAge = () => loopOn ? Math.round(performance.now() - lastDraw) : -1;
 /* ============================================================
    録画：押している間ずっと録る
    ============================================================ */
+/* キャンバスの取り込みは録画ごとに作り直して、終わったら止める。
+   1本を使い回す方式も試したが、2回目以降の録画で
+   「avc1 の codec description が録画中に変わる」と WebKit に警告され、
+   壊れた mp4 になりうるため採らない（5回中4回で発生）。 */
 function startRecording(){
   if (!MIME) throw new Error('この端末では録画できません');
   const cs = cv.captureStream(FPS);
@@ -685,19 +689,16 @@ function startRecording(){
   rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
   const done = new Promise((res, rej) => {
     rec.onstop = () => {
-      cs.getVideoTracks().forEach(t => t.stop());
+      cs.getVideoTracks().forEach(t => { try { t.stop(); } catch (e) {} });
       const b = new Blob(chunks, { type:CONTAINER });
       b.size ? res(b) : rej(new Error('録画結果が空でした'));
     };
     rec.onerror = (e) => rej(e.error || new Error('録画エラー'));
   });
   rec.start(1000);        // 1秒ごとに断片を受け取る。連結すれば元と同じ内容になる
-  /* 壊れた録画器はデータを1つも出さないまま state だけ inactive になる。
-     途中で気づけるよう記録しておく（判断材料が増えるまで中断はしない）。 */
-  const watch = setTimeout(() => {
-    if (!chunks.length) logEvent('断片が来ていない', `1.3秒経過 録画器=${rec.state}`);
-  }, 1300);
-  const clearWatch = () => clearTimeout(watch);
+  /* iOS では timeslice を指定しても録画中に断片が届かないことが分かったため、
+     途中経過は記録しない。断片の有無は停止時のログに出る。 */
+  const clearWatch = () => {};
   return {
     stop(){ clearWatch(); try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {} },
     chunks(){ return chunks.length; },
@@ -869,11 +870,13 @@ async function finishRec(why){
   } catch (e) {
     if (ctl !== c) return;                       // すでに中断済み
     const to = e.message === '__timeout__';
-    logEvent(to ? '停止できず' : '録画失敗', to ? `録画器=${c.state()} ${trackInfo()}` : e.message);
+    logEvent(to ? '停止できず' : '録画失敗', `${to ? '' : e.message + ' '}録画器=${c.state()} 断片=${c.chunks()}個 ${trackInfo()}`);
     c.kill();
-    toast(to ? '録画を停止できませんでした。カメラを開き直します' : e.message);
+    /* 結果が空になるのも壊れた状態のサイン。放っておくと以後ずっと空になるため
+       取り直す。 */
+    toast('録画できませんでした。カメラを開き直します');
     resetShoot();
-    if (to) startCam();
+    startCam(true);
     return;
   }
   if (ctl !== c) return;                         // 中断後に遅れて解決した場合
