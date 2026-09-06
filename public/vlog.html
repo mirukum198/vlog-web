@@ -138,6 +138,10 @@ body{display:flex;flex-direction:column}
   border-radius:8px;font-size:10.5px;line-height:1.65;color:var(--fg);
   white-space:pre;overflow-x:auto;-webkit-overflow-scrolling:touch;max-height:44vh;overflow-y:auto}
 #diagout.on{display:block}
+#logOut{display:none;margin:10px 0 0;padding:10px;background:#0e0f12;border:1px solid var(--line);
+  border-radius:8px;font-size:10.5px;line-height:1.6;color:var(--fg);
+  white-space:pre-wrap;word-break:break-all;max-height:44vh;overflow-y:auto}
+#logOut.on{display:block}
 #pstat{font-size:12px;color:var(--sub);margin-top:10px;text-align:center;line-height:1.7;min-height:1.2em;white-space:pre-line}
 #pbarw{height:4px;background:#20242c;border-radius:2px;margin-top:8px;overflow:hidden;display:none}
 #pbarf{height:100%;width:0;background:var(--ok);transition:width .15s}
@@ -246,7 +250,17 @@ body{display:flex;flex-direction:column}
         <div class="stat"><span>検出したレンズ</span><span id="stLens">-</span></div>
         <div class="note">全クリップを同一設定で録ることで、書き出し時の連結を再エンコードなし（無変換結合）で行っています。</div>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.8</div>
+      <div class="row">
+        <h3>動作ログ</h3>
+        <div class="note">録画が止まらない等、その場で再現しない不具合を後から追うための記録です。端末内にのみ保存され、どこにも送られません。</div>
+        <div class="seg" style="margin-top:8px">
+          <button id="logShow">表示</button>
+          <button id="logShare">共有</button>
+          <button id="logClear">消去</button>
+        </div>
+        <pre id="logOut"></pre>
+      </div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.9</div>
     </div>
   </section>
 
@@ -555,7 +569,9 @@ async function startCam(){
     $('#flipLbl').textContent = cfg.facing === 'user' ? '前面' : '背面';
     renderZoom();
     startLoop();
+    logEvent('カメラ開始', trackInfo());
   } catch (e) {
+    logEvent('カメラを開けず', e.name + ': ' + e.message);
     camMsg.style.display = 'flex';
     camMsg.innerHTML = `<div>カメラを開けませんでした<br><small style="color:#ff8f80">${e.name}: ${e.message}</small><br>`
       + `${location.protocol === 'https:' ? 'カメラの許可を確認してください' : 'https でアクセスしてください（http ではカメラを使えません）'}</div>`;
@@ -618,7 +634,16 @@ function startRecording(){
     rec.onerror = (e) => rej(e.error || new Error('録画エラー'));
   });
   rec.start();
-  return { stop(){ if (rec.state !== 'inactive') rec.stop(); }, done, t0: performance.now() };
+  return {
+    stop(){ try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {} },
+    /* onstop が来ないまま固まったときに、外から確実に手を切るための出口 */
+    kill(){
+      try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {}
+      cs.getVideoTracks().forEach(t => { try { t.stop(); } catch (e) {} });
+    },
+    state(){ try { return rec.state; } catch (e) { return '不明'; } },
+    done, t0: performance.now(),
+  };
 }
 /* 録れた mp4 のトラック構成を実際に読む（サンプルは取り出さないので軽い） */
 function probeTracks(blob){
@@ -631,45 +656,119 @@ function makeThumb(){
   return new Promise(r => t.toBlob(r, 'image/jpeg', 0.72));
 }
 
+/* ============================================================
+   動作ログ（端末内のみ）
+   録画が止まらない等、その場で再現しない不具合を後から追うための記録。
+   ============================================================ */
+const LOGMAX = 400;
+function logEvent(tag, info){
+  try {
+    const a = JSON.parse(localStorage.getItem('vlogLog') || '[]');
+    const d = new Date();
+    a.push(`${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.`
+      + `${String(d.getMilliseconds()).padStart(3,'0')} ${tag}${info ? ' ' + info : ''}`);
+    while (a.length > LOGMAX) a.shift();
+    localStorage.setItem('vlogLog', JSON.stringify(a));
+  } catch (e) {}
+}
+function trackInfo(){
+  const v = stream && stream.getVideoTracks()[0];
+  const a = curAudio;
+  const st = (t) => t ? `${t.readyState}${t.muted ? '/無音' : ''}${t.enabled ? '' : '/停止'}` : 'なし';
+  return `映像=${st(v)} 音声=${st(a)}`;
+}
+
 let ctl = null, pending = null, busy = false, ending = false;
-let progTimer = null, autoStop = null, thumbP = null, startedAt = null;
+let progTimer = null, autoStop = null, tapStop = null, thumbP = null, startedAt = null;
+let pointerDown = false, curPointerId = null;
+
+/* 停止のきっかけを最初から仕掛ける。
+   以前は「指を離してから規定秒数まで撮る」形だったため、
+   pointerup が来ないと 30秒の上限まで止まらなかった。 */
+function scheduleStops(){
+  clearTimeout(tapStop); clearTimeout(autoStop);
+  tapStop  = setTimeout(() => { if (!pointerDown) finishRec('規定秒数'); }, cfg.dur * 1000);
+  autoStop = setTimeout(() => finishRec('上限' + MAXHOLD + '秒'), MAXHOLD * 1000);
+}
 
 shoot.addEventListener('pointerdown', (ev) => {
   ev.preventDefault();
-  if (busy || shoot.disabled || confirmEl.classList.contains('on')) return;
-  busy = true; ending = false;
+  if (shoot.disabled || confirmEl.classList.contains('on')) return;
+  // 録画中にもう一度押されたら止める（止まらなくなったときの脱出口）
+  if (busy) { logEvent('再押下で停止'); finishRec('手動'); return; }
+  busy = true; ending = false; pointerDown = true; curPointerId = ev.pointerId;
+  try { shoot.setPointerCapture(ev.pointerId); } catch (e) {}
   startedAt = new Date(); stampAt = startedAt;
   shoot.classList.add('rec');
+  logEvent('押下', trackInfo());
   try { ctl = startRecording(); }
-  catch (e) { toast(e.message); resetShoot(); return; }
+  catch (e) { logEvent('開始できず', e.message); toast(e.message); resetShoot(); return; }
   thumbP = makeThumb();
   progTimer = setInterval(() => {
     const s = (performance.now() - ctl.t0) / 1000;
     prog.style.width = Math.min(100, s / MAXHOLD * 100) + '%';
     shoot.textContent = s >= 1 ? s.toFixed(1) : '';
   }, 60);
-  autoStop = setTimeout(() => finishRec(), MAXHOLD * 1000);
+  scheduleStops();
 });
 
-const onUp = () => {
+/* 離指の検知は pointerup だけに頼らない。
+   setPointerCapture と組で使う lostpointercapture のほうが取りこぼしが少ない。 */
+function releasePointer(why){
+  if (!pointerDown) return;
+  pointerDown = false;
+  logEvent('離指', why);
   if (!ctl || ending) return;
   const el = (performance.now() - ctl.t0) / 1000;
-  // タップなら規定秒数まで撮り続ける。長押しならその場で止める。
-  if (el < cfg.dur) setTimeout(() => finishRec(), (cfg.dur - el) * 1000);
-  else finishRec();
-};
-window.addEventListener('pointerup', onUp);
-window.addEventListener('pointercancel', onUp);
+  if (el >= cfg.dur) finishRec('離指');     // 規定秒数未満なら tapStop が拾う
+}
+for (const e of ['pointerup','pointercancel','lostpointercapture'])
+  shoot.addEventListener(e, () => releasePointer(e));
+window.addEventListener('pointerup', () => releasePointer('画面全体'));
+window.addEventListener('pointercancel', () => releasePointer('画面全体/中断'));
+/* touch 系も併せて見る。iOS では pointer 側が届かず touch 側だけ届くことがある。 */
+window.addEventListener('touchend', () => releasePointer('touchend'));
+window.addEventListener('touchcancel', () => releasePointer('touchcancel'));
 
-async function finishRec(){
+/* 画面が隠れたら録画を打ち切る。復帰時にカメラが死んでいれば取り直す。 */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    logEvent('非表示', trackInfo());
+    pointerDown = false;
+    if (ctl && !ending) finishRec('非表示');
+  } else {
+    logEvent('復帰', trackInfo());
+    if (!stream) return;
+    const vt = stream.getVideoTracks()[0];
+    if (!liveTrack(vt)) { logEvent('復帰時にカメラが死んでいた'); startCam(); }
+    else ensureAudio();
+  }
+});
+
+async function finishRec(why){
   if (!ctl || ending) return;
   ending = true;
-  clearTimeout(autoStop);
+  clearTimeout(autoStop); clearTimeout(tapStop);
   const sec = (performance.now() - ctl.t0) / 1000;
+  logEvent('停止要求', `${why || '-'} ${sec.toFixed(2)}秒 録画器=${ctl.state()}`);
   ctl.stop();
   let blob;
-  try { blob = await ctl.done; }
-  catch (e) { toast(e.message); return resetShoot(); }
+  try {
+    /* onstop が来ないまま固まるのを防ぐ。
+       トラックが死んでいると stop() を呼んでも onstop が発火しないことがある。 */
+    blob = await Promise.race([ ctl.done,
+      new Promise((_, rej) => setTimeout(() => rej(new Error('__timeout__')), 5000)) ]);
+  } catch (e) {
+    const to = e.message === '__timeout__';
+    logEvent(to ? '停止できず' : '録画失敗', to ? `録画器=${ctl.state()} ${trackInfo()}` : e.message);
+    ctl.kill();
+    toast(to ? '録画を停止できませんでした。カメラを開き直します' : e.message);
+    const again = to;
+    resetShoot();
+    if (again) startCam();
+    return;
+  }
+  logEvent('停止完了', `${(blob.size/1000).toFixed(0)}KB`);
   const thumb = await thumbP;
   const types = await probeTracks(blob);
   const hasAudio = types.includes('audio');
@@ -683,7 +782,9 @@ async function finishRec(){
   resetShoot();
 }
 function resetShoot(){
-  clearInterval(progTimer); clearTimeout(autoStop);
+  clearInterval(progTimer); clearTimeout(autoStop); clearTimeout(tapStop);
+  if (curPointerId != null) { try { shoot.releasePointerCapture(curPointerId); } catch (e) {} }
+  curPointerId = null; pointerDown = false;
   ctl = null; busy = false; ending = false; stampAt = null;
   shoot.classList.remove('rec'); shoot.textContent = ''; prog.style.width = '0';
 }
@@ -1546,6 +1647,30 @@ function renderSet(){
     });
   } else $('#stUsage').textContent = '不明';
 }
+const readLog = () => { try { return JSON.parse(localStorage.getItem('vlogLog') || '[]'); } catch (e) { return []; } };
+$('#logShow').onclick = () => {
+  const el = $('#logOut'), a = readLog();
+  el.classList.toggle('on');
+  el.textContent = a.length ? a.slice(-120).join('\n') : 'まだ記録がありません';
+};
+$('#logShare').onclick = async () => {
+  const a = readLog();
+  if (!a.length) return toast('記録がありません');
+  const text = `vlog-web 動作ログ\n${navigator.userAgent}\n\n${a.join('\n')}`;
+  const file = new File([text], `vlog_log_${dateStrOf(new Date()).replace(/-/g,'')}.txt`, { type:'text/plain' });
+  if (navigator.canShare && navigator.canShare({ files:[file] })) {
+    try { await navigator.share({ files:[file] }); return; } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const u = URL.createObjectURL(file);
+  const el = document.createElement('a'); el.href = u; el.download = file.name; el.click();
+  setTimeout(() => URL.revokeObjectURL(u), 60000);
+};
+$('#logClear').onclick = () => {
+  localStorage.removeItem('vlogLog');
+  $('#logOut').textContent = ''; $('#logOut').classList.remove('on');
+  toast('ログを消去しました');
+};
+
 $('#wipe').onclick = async () => {
   if (!confirm('保存済みのクリップをすべて削除します。よろしいですか？')) return;
   const s = await tx('clips','readwrite'); await req(s.clear());
