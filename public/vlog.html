@@ -260,7 +260,7 @@ body{display:flex;flex-direction:column}
         </div>
         <pre id="logOut"></pre>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.9</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.10</div>
     </div>
   </section>
 
@@ -420,12 +420,18 @@ let curAudio = null;        // 実際に録音に使う音声トラック
 const srcVideo = document.createElement('video');
 srcVideo.playsInline = true; srcVideo.muted = true; srcVideo.setAttribute('playsinline','');
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const liveTrack = (t) => !!t && t.readyState === 'live';
+/* バックグラウンドへ回ると iOS はトラックを muted にする。
+   muted のまま復帰したトラックを MediaRecorder に渡すと、
+   stop() で state は inactive になるのに onstop が発火しなくなる（実機ログで確認）。 */
+const usableTrack = (t) => liveTrack(t) && !t.muted;
 
 async function ensureAudio(){
   let at = micStream && micStream.getAudioTracks()[0];
-  if (!liveTrack(at)) {
+  if (!usableTrack(at)) {
     try {
+      if (micStream) micStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       at = micStream.getAudioTracks()[0];
     } catch (e) { at = null; }
@@ -539,6 +545,7 @@ async function setZoom(z){
 
 async function startCam(){
   try {
+    shoot.disabled = true;
     await ensureAudio();                                   // 先にマイクを確保する
     if (stream) stream.getVideoTracks().forEach(t => t.stop());   // 映像だけ止める
     const pick = pickCam();
@@ -633,7 +640,7 @@ function startRecording(){
     };
     rec.onerror = (e) => rej(e.error || new Error('録画エラー'));
   });
-  rec.start();
+  rec.start(1000);        // 1秒ごとに断片を受け取る。連結すれば元と同じ内容になる
   return {
     stop(){ try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {} },
     /* onstop が来ないまま固まったときに、外から確実に手を切るための出口 */
@@ -642,6 +649,8 @@ function startRecording(){
       cs.getVideoTracks().forEach(t => { try { t.stop(); } catch (e) {} });
     },
     state(){ try { return rec.state; } catch (e) { return '不明'; } },
+    /* onstop が来なくても、ここまでに受け取った断片から組み立てられるようにする */
+    salvage(){ return chunks.length ? new Blob(chunks, { type:CONTAINER }) : null; },
     done, t0: performance.now(),
   };
 }
@@ -694,8 +703,14 @@ function scheduleStops(){
 shoot.addEventListener('pointerdown', (ev) => {
   ev.preventDefault();
   if (shoot.disabled || confirmEl.classList.contains('on')) return;
-  // 録画中にもう一度押されたら止める（止まらなくなったときの脱出口）
-  if (busy) { logEvent('再押下で停止'); finishRec('手動'); return; }
+  /* 録画中にもう一度押されたら止める。
+     停止処理に入ったまま返らない状態（ending=true）では finishRec が
+     即 return するため、そこは強制中断に回す。 */
+  if (busy) {
+    if (ending) abortRec('停止処理が返らないまま再押下');
+    else { logEvent('再押下で停止'); finishRec('手動'); }
+    return;
+  }
   busy = true; ending = false; pointerDown = true; curPointerId = ev.pointerId;
   try { shoot.setPointerCapture(ev.pointerId); } catch (e) {}
   startedAt = new Date(); stampAt = startedAt;
@@ -739,35 +754,63 @@ document.addEventListener('visibilitychange', () => {
   } else {
     logEvent('復帰', trackInfo());
     if (!stream) return;
-    const vt = stream.getVideoTracks()[0];
-    if (!liveTrack(vt)) { logEvent('復帰時にカメラが死んでいた'); startCam(); }
-    else ensureAudio();
+    /* 復帰直後は muted が残っていることがあり、見た目 live でも中身が壊れている。
+       判定に頼らず開き直す。 */
+    shoot.disabled = true;
+    setTimeout(() => { logEvent('復帰後にカメラを取り直す', trackInfo()); startCam(); }, 250);
   }
 });
 
+/* どうしても止まらないときの強制中断。UI を戻してカメラを開き直す。 */
+function abortRec(why){
+  if (!ctl) return;
+  logEvent('強制中断', `${why} 録画器=${ctl.state()} ${trackInfo()}`);
+  try { ctl.kill(); } catch (e) {}
+  toast('録画を中断しました。カメラを開き直します');
+  resetShoot();
+  startCam();
+}
+
 async function finishRec(why){
   if (!ctl || ending) return;
+  const c = ctl;                   // 途中で中断されても取り違えないよう控える
   ending = true;
   clearTimeout(autoStop); clearTimeout(tapStop);
-  const sec = (performance.now() - ctl.t0) / 1000;
-  logEvent('停止要求', `${why || '-'} ${sec.toFixed(2)}秒 録画器=${ctl.state()}`);
-  ctl.stop();
+  const sec = (performance.now() - c.t0) / 1000;
+  logEvent('停止要求', `${why || '-'} ${sec.toFixed(2)}秒 録画器=${c.state()}`);
+  c.stop();
   let blob;
   try {
-    /* onstop が来ないまま固まるのを防ぐ。
-       トラックが死んでいると stop() を呼んでも onstop が発火しないことがある。 */
-    blob = await Promise.race([ ctl.done,
-      new Promise((_, rej) => setTimeout(() => rej(new Error('__timeout__')), 5000)) ]);
+    let settled = false;
+    const primary = c.done.then(b => { settled = true; return b; },
+                                e => { settled = true; throw e; });
+    /* iOS Safari では stop() が効いて state が inactive になっても
+       onstop が発火しないことがある。その場合は受け取り済みの断片から組み立てる。
+       本筋が決着したら何もしない（決着済みなのに回収ログが出ると切り分けを誤る）。 */
+    const rescue = (async () => {
+      await sleep(700);
+      for (let i = 0; i < 20; i++) {
+        if (settled) return new Promise(() => {});
+        if (c.state() === 'inactive') {
+          const b = c.salvage();
+          if (b && b.size) { logEvent('onstopが来ないため回収', `${(b.size/1000).toFixed(0)}KB`); return b; }
+        }
+        await sleep(100);
+      }
+      throw new Error('__timeout__');
+    })();
+    blob = await Promise.race([ primary, rescue ]);
   } catch (e) {
+    if (ctl !== c) return;                       // すでに中断済み
     const to = e.message === '__timeout__';
-    logEvent(to ? '停止できず' : '録画失敗', to ? `録画器=${ctl.state()} ${trackInfo()}` : e.message);
-    ctl.kill();
+    logEvent(to ? '停止できず' : '録画失敗', to ? `録画器=${c.state()} ${trackInfo()}` : e.message);
+    c.kill();
     toast(to ? '録画を停止できませんでした。カメラを開き直します' : e.message);
-    const again = to;
     resetShoot();
-    if (again) startCam();
+    if (to) startCam();
     return;
   }
+  if (ctl !== c) return;                         // 中断後に遅れて解決した場合
   logEvent('停止完了', `${(blob.size/1000).toFixed(0)}KB`);
   const thumb = await thumbP;
   const types = await probeTracks(blob);
