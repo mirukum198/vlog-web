@@ -260,7 +260,7 @@ body{display:flex;flex-direction:column}
         </div>
         <pre id="logOut"></pre>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.10</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.12</div>
     </div>
   </section>
 
@@ -427,9 +427,13 @@ const liveTrack = (t) => !!t && t.readyState === 'live';
    stop() で state は inactive になるのに onstop が発火しなくなる（実機ログで確認）。 */
 const usableTrack = (t) => liveTrack(t) && !t.muted;
 
-async function ensureAudio(){
+async function ensureAudio(force){
   let at = micStream && micStream.getAudioTracks()[0];
-  if (!usableTrack(at)) {
+  /* バックグラウンドを跨いだトラックは、復帰後に live へ戻って見えても
+     内部が壊れていることがある（録画してもデータが1つも出ない）。
+     復帰時は状態を見ずに取り直す。 */
+  if (force || !usableTrack(at)) {
+    logEvent('マイク取り直し', force ? '復帰のため' : `使用不可のため ${at ? at.readyState + (at.muted ? '/無音' : '') : 'なし'}`);
     try {
       if (micStream) micStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -543,10 +547,34 @@ async function setZoom(z){
   await startCam();   // レンズ・センサークロップ・解像度のどれも変わりうるので取り直す
 }
 
-async function startCam(){
+/* 録画器が生きているか短く試す。
+   バックグラウンド復帰後は、トラックが live に見えても MediaRecorder が
+   データを1つも出さない状態になることがある。撮る前に気づくための検査。 */
+async function selfTest(){
+  if (!MIME) return false;
+  let cs = null;
+  try {
+    cs = cv.captureStream(FPS);
+    const at = usableTrack(curAudio) ? curAudio : null;
+    if (at) { try { cs.addTrack(at); } catch (e) {} }
+    const rec = new MediaRecorder(cs, { mimeType:MIME, videoBitsPerSecond:VBPS });
+    let got = 0;
+    rec.ondataavailable = (e) => { if (e.data) got += e.data.size; };
+    const stopped = new Promise(res => { rec.onstop = () => res(true); });
+    rec.start();
+    await sleep(350);
+    try { rec.stop(); } catch (e) {}
+    const ok = await Promise.race([ stopped, sleep(1500).then(() => false) ]);
+    return !!ok && got > 0;
+  } catch (e) { return false; }
+  finally { if (cs) cs.getVideoTracks().forEach(t => { try { t.stop(); } catch (e) {} }); }
+}
+
+let camRetry = 0;
+async function startCam(force){
   try {
     shoot.disabled = true;
-    await ensureAudio();                                   // 先にマイクを確保する
+    await ensureAudio(force);                              // 先にマイクを確保する
     if (stream) stream.getVideoTracks().forEach(t => t.stop());   // 映像だけ止める
     const pick = pickCam();
     // レンズだけで足りないときは、切り抜いても画素が残るよう高い解像度を要求する
@@ -577,6 +605,19 @@ async function startCam(){
     renderZoom();
     startLoop();
     logEvent('カメラ開始', trackInfo());
+    if (force) {
+      const ok = await selfTest();
+      logEvent('録画の自己診断', ok ? '正常' : '異常');
+      if (!ok && camRetry < 1) {
+        camRetry++;
+        logEvent('自己診断が通らないため取り直す');
+        if (micStream) micStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
+        micStream = null; curAudio = null;
+        return startCam(true);
+      }
+      camRetry = 0;
+      if (!ok) toast('カメラの調子が戻りません。アプリを開き直してください');
+    }
   } catch (e) {
     logEvent('カメラを開けず', e.name + ': ' + e.message);
     camMsg.style.display = 'flex';
@@ -613,13 +654,23 @@ function drawStamp(dt){
   ctx.fillText(text, right ? CW-p : p, bottom ? CH-p : p+fs);
   ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
 }
-let loopOn = false, stampAt = null;
+let loopOn = false, stampAt = null, lastDraw = 0, loopGen = 0;
+/* バックグラウンドへ回ると requestAnimationFrame の連鎖が切れることがある。
+   以前は loopOn が立っていると即 return していたため、連鎖が死んだまま
+   二度と再開せず、キャンバスが止まりっぱなしになりえた。
+   世代番号で古い連鎖を捨てて必ず張り直す。 */
 function startLoop(){
-  if (loopOn) return;
   loopOn = true;
-  (function tick(){ if (!loopOn) return; drawFrame(srcVideo, stampAt || new Date()); requestAnimationFrame(tick); })();
+  const gen = ++loopGen;
+  (function tick(){
+    if (!loopOn || gen !== loopGen) return;
+    lastDraw = performance.now();
+    drawFrame(srcVideo, stampAt || new Date());
+    requestAnimationFrame(tick);
+  })();
 }
 const stopLoop = () => { loopOn = false; };
+const drawAge = () => loopOn ? Math.round(performance.now() - lastDraw) : -1;
 
 /* ============================================================
    録画：押している間ずっと録る
@@ -641,10 +692,18 @@ function startRecording(){
     rec.onerror = (e) => rej(e.error || new Error('録画エラー'));
   });
   rec.start(1000);        // 1秒ごとに断片を受け取る。連結すれば元と同じ内容になる
+  /* 壊れた録画器はデータを1つも出さないまま state だけ inactive になる。
+     途中で気づけるよう記録しておく（判断材料が増えるまで中断はしない）。 */
+  const watch = setTimeout(() => {
+    if (!chunks.length) logEvent('断片が来ていない', `1.3秒経過 録画器=${rec.state}`);
+  }, 1300);
+  const clearWatch = () => clearTimeout(watch);
   return {
-    stop(){ try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {} },
+    stop(){ clearWatch(); try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {} },
+    chunks(){ return chunks.length; },
     /* onstop が来ないまま固まったときに、外から確実に手を切るための出口 */
     kill(){
+      clearWatch();
       try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {}
       cs.getVideoTracks().forEach(t => { try { t.stop(); } catch (e) {} });
     },
@@ -684,7 +743,8 @@ function trackInfo(){
   const v = stream && stream.getVideoTracks()[0];
   const a = curAudio;
   const st = (t) => t ? `${t.readyState}${t.muted ? '/無音' : ''}${t.enabled ? '' : '/停止'}` : 'なし';
-  return `映像=${st(v)} 音声=${st(a)}`;
+  const d = drawAge();
+  return `映像=${st(v)} 音声=${st(a)} 描画=${d < 0 ? '停止' : d + 'ms前'}`;
 }
 
 let ctl = null, pending = null, busy = false, ending = false;
@@ -716,6 +776,8 @@ shoot.addEventListener('pointerdown', (ev) => {
   startedAt = new Date(); stampAt = startedAt;
   shoot.classList.add('rec');
   logEvent('押下', trackInfo());
+  // 描画が止まっていると中身の無い動画になるため、撮る前に張り直す
+  if (!loopOn || drawAge() > 400) { logEvent('描画が止まっていたので再開', `${drawAge()}ms前`); startLoop(); }
   try { ctl = startRecording(); }
   catch (e) { logEvent('開始できず', e.message); toast(e.message); resetShoot(); return; }
   thumbP = makeThumb();
@@ -757,7 +819,7 @@ document.addEventListener('visibilitychange', () => {
     /* 復帰直後は muted が残っていることがあり、見た目 live でも中身が壊れている。
        判定に頼らず開き直す。 */
     shoot.disabled = true;
-    setTimeout(() => { logEvent('復帰後にカメラを取り直す', trackInfo()); startCam(); }, 250);
+    setTimeout(() => { logEvent('復帰後にカメラとマイクを取り直す', trackInfo()); startCam(true); }, 250);
   }
 });
 
@@ -777,7 +839,7 @@ async function finishRec(why){
   ending = true;
   clearTimeout(autoStop); clearTimeout(tapStop);
   const sec = (performance.now() - c.t0) / 1000;
-  logEvent('停止要求', `${why || '-'} ${sec.toFixed(2)}秒 録画器=${c.state()}`);
+  logEvent('停止要求', `${why || '-'} ${sec.toFixed(2)}秒 録画器=${c.state()} 断片=${c.chunks()}個`);
   c.stop();
   let blob;
   try {
@@ -789,12 +851,16 @@ async function finishRec(why){
        本筋が決着したら何もしない（決着済みなのに回収ログが出ると切り分けを誤る）。 */
     const rescue = (async () => {
       await sleep(700);
+      let empty = 0;
       for (let i = 0; i < 20; i++) {
         if (settled) return new Promise(() => {});
         if (c.state() === 'inactive') {
           const b = c.salvage();
           if (b && b.size) { logEvent('onstopが来ないため回収', `${(b.size/1000).toFixed(0)}KB`); return b; }
-        }
+          /* 停止済みなのに断片が1つも無い＝録画器が死んでいる。
+             この状態から待ってもデータは出てこないので、待たずに復帰する。 */
+          if (++empty >= 3) throw new Error('__timeout__');
+        } else empty = 0;
         await sleep(100);
       }
       throw new Error('__timeout__');
