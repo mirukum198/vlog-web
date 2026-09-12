@@ -207,24 +207,6 @@ body{display:flex;flex-direction:column}
   <section class="view" id="v-set">
     <div id="set">
       <div class="row">
-        <h3>タップ撮影の長さ</h3>
-        <div class="seg" id="segDur"></div>
-        <div class="note">長押しした場合は指を離すまで撮り続けます（最大30秒）。</div>
-      </div>
-      <div class="row">
-        <h3>日付の書式</h3>
-        <div class="seg" id="segFmt"></div>
-      </div>
-      <div class="row">
-        <h3>表示位置</h3>
-        <div class="seg" id="segPos"></div>
-      </div>
-      <div class="row">
-        <h3>映像の収め方</h3>
-        <div class="seg" id="segFit"></div>
-        <div class="note">切り抜き = 縦画面いっぱいに埋める / 全体 = 上下に黒帯を入れて全体を残す。縦持ちなら両者は同じ結果になります。</div>
-      </div>
-      <div class="row">
         <h3>保存状況</h3>
         <div class="stat"><span>クリップ数</span><span id="stClips">-</span></div>
         <div class="stat"><span>記録日数</span><span id="stDays">-</span></div>
@@ -241,6 +223,9 @@ body{display:flex;flex-direction:column}
         <h3>録画設定（結合の互換性）</h3>
         <div class="stat"><span>解像度</span><span>720 x 1280 固定</span></div>
         <div class="stat"><span>フレームレート</span><span>30 fps 固定</span></div>
+        <div class="stat"><span>タップ撮影</span><span>2秒 固定（長押しは最大30秒）</span></div>
+        <div class="stat"><span>日付の焼きこみ</span><span>右下 固定</span></div>
+        <div class="stat"><span>映像の収め方</span><span>全体 固定</span></div>
         <div class="stat"><span>形式</span><span id="stMime">-</span></div>
         <div class="stat"><span>マイク</span><span id="stMic">-</span></div>
         <div class="stat"><span>使用中のカメラ</span><span id="stCam">-</span></div>
@@ -260,7 +245,7 @@ body{display:flex;flex-direction:column}
         </div>
         <pre id="logOut"></pre>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.13</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.14</div>
     </div>
   </section>
 
@@ -283,8 +268,6 @@ body{display:flex;flex-direction:column}
     <div class="sub" id="sheetSub">-</div>
     <h3>範囲</h3>
     <div class="seg" id="segRange"></div>
-    <h3>各クリップの長さ</h3>
-    <div class="seg" id="segTrim"></div>
     <div id="summary">
       <div class="stat"><span>クリップ数</span><span id="exN">-</span></div>
       <div class="stat"><span>できあがる長さ</span><span id="exSec">-</span></div>
@@ -312,18 +295,12 @@ body{display:flex;flex-direction:column}
 const CW = 720, CH = 1280, FPS = 30, VBPS = 2_000_000;
 const MAXHOLD = 30;                       // 長押しの上限（秒）
 
-const FMTS = {
-  ymd:  { label:'2026-08-30 09:00', fn:(d)=>`${d.y}-${d.m}-${d.d}  ${d.hh}:${d.mm}` },
-  md:   { label:'08/30 09:00',      fn:(d)=>`${d.m}/${d.d}  ${d.hh}:${d.mm}` },
-  slash:{ label:'2026/08/30 09:00', fn:(d)=>`${d.y}/${d.m}/${d.d}  ${d.hh}:${d.mm}` },
-};
-const POSS  = { br:'右下', bl:'左下', tr:'右上', tl:'左上' };
-const FITS  = { cover:'切り抜き', contain:'全体' };
-const DURS  = [2, 2.5, 3];
-const WD    = ['日','月','火','水','木','金','土'];
+const TAPSEC = 2;                    // タップで撮る長さ（固定。長押しは MAXHOLD まで）
+const WD     = ['日','月','火','水','木','金','土'];
+const WDE    = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
 const ZOOMS = [0.5, 1, 2];
-const DEF = { dur:2, fmt:'ymd', pos:'br', fit:'cover', facing:'environment', zoom:1 };
+const DEF = { facing:'environment', zoom:1 };
 let cfg = Object.assign({}, DEF, JSON.parse(localStorage.getItem('vlogCfg') || '{}'));
 const saveCfg = () => localStorage.setItem('vlogCfg', JSON.stringify(cfg));
 
@@ -338,6 +315,11 @@ const parts = (dt) => ({ y:dt.getFullYear(), m:pad(dt.getMonth()+1), d:pad(dt.ge
   hh:pad(dt.getHours()), mm:pad(dt.getMinutes()), ss:pad(dt.getSeconds()) });
 const dateStrOf = (dt) => { const p = parts(dt); return `${p.y}-${p.m}-${p.d}`; };
 const timeStrOf = (dt) => { const p = parts(dt); return `${p.hh}:${p.mm}`; };
+/* 動画に焼きこむ文字。例: 2026-09-12 Sat 21:17 */
+function stampText(dt){
+  const p = parts(dt);
+  return `${p.y}-${p.m}-${p.d} ${WDE[dt.getDay()]} ${p.hh}:${p.mm}`;
+}
 function isoLocal(dt){
   const p = parts(dt), off = -dt.getTimezoneOffset(), sg = off >= 0 ? '+' : '-', a = Math.abs(off);
   return `${p.y}-${p.m}-${p.d}T${p.hh}:${p.mm}:${p.ss}.${String(dt.getMilliseconds()).padStart(3,'0')}`
@@ -633,7 +615,7 @@ function drawFrame(src, dt){
   const vw = src.videoWidth, vh = src.videoHeight;
   ctx.fillStyle = '#000'; ctx.fillRect(0,0,CW,CH);
   if (vw && vh) {
-    const base = cfg.fit === 'cover' ? Math.max(CW/vw, CH/vh) : Math.min(CW/vw, CH/vh);
+    const base = Math.min(CW/vw, CH/vh);   // 映像の全体を入れる（足りない分は黒帯）
     const sc = base * digitalZoom;
     const w = vw*sc, h = vh*sc;
     ctx.drawImage(src, (CW-w)/2, (CH-h)/2, w, h);
@@ -641,17 +623,14 @@ function drawFrame(src, dt){
   drawStamp(dt);
 }
 function drawStamp(dt){
-  const text = FMTS[cfg.fmt].fn(parts(dt));
   const fs = Math.round(CH*0.04), p = Math.round(CH*0.03);
   ctx.font = `600 ${fs}px -apple-system, "Hiragino Sans", sans-serif`;
   ctx.textBaseline = 'alphabetic';
-  const right = cfg.pos === 'br' || cfg.pos === 'tr';
-  const bottom = cfg.pos === 'br' || cfg.pos === 'bl';
-  ctx.textAlign = right ? 'right' : 'left';
+  ctx.textAlign = 'right';
   ctx.shadowColor = 'rgba(0,0,0,.85)'; ctx.shadowBlur = Math.round(fs*0.3);
   ctx.shadowOffsetY = Math.round(fs*0.05);
   ctx.fillStyle = '#fff';
-  ctx.fillText(text, right ? CW-p : p, bottom ? CH-p : p+fs);
+  ctx.fillText(stampText(dt), CW-p, CH-p);     // 右下に固定
   ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
 }
 let loopOn = false, stampAt = null, lastDraw = 0, loopGen = 0;
@@ -757,7 +736,7 @@ let pointerDown = false, curPointerId = null;
    pointerup が来ないと 30秒の上限まで止まらなかった。 */
 function scheduleStops(){
   clearTimeout(tapStop); clearTimeout(autoStop);
-  tapStop  = setTimeout(() => { if (!pointerDown) finishRec('規定秒数'); }, cfg.dur * 1000);
+  tapStop  = setTimeout(() => { if (!pointerDown) finishRec('規定秒数'); }, TAPSEC * 1000);
   autoStop = setTimeout(() => finishRec('上限' + MAXHOLD + '秒'), MAXHOLD * 1000);
 }
 
@@ -798,7 +777,7 @@ function releasePointer(why){
   logEvent('離指', why);
   if (!ctl || ending) return;
   const el = (performance.now() - ctl.t0) / 1000;
-  if (el >= cfg.dur) finishRec('離指');     // 規定秒数未満なら tapStop が拾う
+  if (el >= TAPSEC) finishRec('離指');      // 規定秒数未満なら tapStop が拾う
 }
 for (const e of ['pointerup','pointercancel','lostpointercapture'])
   shoot.addEventListener(e, () => releasePointer(e));
@@ -931,7 +910,7 @@ $('#camStart').onclick = startCam;
 
 function updateRecMeta(){
   const now = new Date();
-  $('#nowLbl').textContent = FMTS[cfg.fmt].fn(parts(now));
+  $('#nowLbl').textContent = stampText(now);
   const t = dateStrOf(now);
   const all = Object.values(dayIndex).reduce((a,b)=>a+b,0);
   $('#todayLbl').textContent = `本日 ${dayIndex[t]||0}本 / 全 ${all}本`;
@@ -1427,7 +1406,7 @@ function buildMp4(tracks, order, movieDur){
   return new Blob([head, mdatHead, ...parts], { type:'video/mp4' });
 }
 
-async function mergeClips(clips, trimSec, onProg){
+async function mergeClips(clips, onProg){
   const tracks = [];               // 出力トラック（映像・音声）
   const outT = {};                 // 'video' / 'audio' -> トラック
   const order = [];                // mdat に並べる順（クリップごと・トラックごと）
@@ -1459,16 +1438,9 @@ async function mergeClips(clips, trimSec, onProg){
     /* 長さは duration の合計ではなく DTS の実際の幅で測る。 */
     const span = (a) => (a[a.length-1].dts + a[a.length-1].duration) - a[0].dts;
 
-    // 必要なら先頭 trimSec 秒だけ残す
     let clipDur = 0;
     for (const k in byKind) {
       const ts = outT[k].timescale;
-      if (trimSec) {
-        const lim = trimSec * ts, arr = byKind[k], base0 = arr[0].dts;
-        const keep = [];
-        for (const s of arr) { if (s.dts - base0 >= lim) break; keep.push(s); }
-        byKind[k] = keep.length ? keep : arr.slice(0,1);
-      }
       if (byKind[k].length) clipDur = Math.max(clipDur, span(byKind[k]) / ts);
     }
     if (!clipDur) { skipped++; continue; }
@@ -1519,8 +1491,7 @@ async function mergeClips(clips, trimSec, onProg){
 
 /* ---- 書き出しシート ---- */
 const RANGES = { day:'この日', week:'1週間', month:'1ヶ月', all:'すべて' };
-const TRIMS  = [[0,'そのまま'], [1,'先頭1秒'], [0.5,'先頭0.5秒']];
-let exKind = 'day', exAnchor = null, exTrim = 0, exBusy = false;
+let exKind = 'day', exAnchor = null, exBusy = false;
 
 function rangeDates(kind, anchor){
   const ds = Object.keys(dayIndex).sort();
@@ -1540,7 +1511,6 @@ function openSheet(kind, anchor){
   exKind = kind;
   exAnchor = anchor || Object.keys(dayIndex).sort().reverse()[0];
   if (!exAnchor) return toast('クリップがありません');
-  exTrim = kind === 'month' || kind === 'all' ? 1 : 0;
   $('#pstat').textContent = ''; $('#pbarw').style.display = 'none'; $('#pbarf').style.width = '0';
   $('#diagout').classList.remove('on'); $('#diagout').textContent = '';
   $('#go').disabled = false;
@@ -1564,7 +1534,6 @@ function segEl(el, items, cur, pick){
 async function renderSheet(){
   $('#sheetSub').textContent = `基準日: ${dayLabel(exAnchor)}`;
   segEl($('#segRange'), Object.entries(RANGES), exKind, (v) => { exKind = v; renderSheet(); });
-  segEl($('#segTrim'), TRIMS, exTrim, (v) => { exTrim = Number(v); renderSheet(); });
 
   const dates = rangeDates(exKind, exAnchor);
   let clips = [];
@@ -1572,12 +1541,8 @@ async function renderSheet(){
   clips.sort((a,b) => a.createdAt - b.createdAt);
   window.__exClips = clips;
 
-  const sec = clips.reduce((a,c) => a + (exTrim ? Math.min(exTrim, c.durationSec||0) : (c.durationSec||0)), 0);
-  const bytes = clips.reduce((a,c) => {
-    const full = c.bytes || (c.blob && c.blob.size) || 0;
-    const r = exTrim && c.durationSec ? Math.min(1, exTrim / c.durationSec) : 1;
-    return a + full * r;
-  }, 0);
+  const sec = clips.reduce((a,c) => a + (c.durationSec || 0), 0);
+  const bytes = clips.reduce((a,c) => a + (c.bytes || (c.blob && c.blob.size) || 0), 0);
   $('#exN').textContent = `${clips.length} 本`;
   $('#exSec').textContent = clips.length ? fmtSec(sec) : '-';
   $('#exMB').textContent = clips.length ? fmtBytes(bytes) : '-';
@@ -1586,7 +1551,7 @@ async function renderSheet(){
   if (bytes > 2.5e8) {
     w.style.display = 'block';
     w.innerHTML = '推定サイズが大きいため、書き出し中に Safari が落ちる可能性があります。'
-      + '「各クリップの長さ」を短くするか、範囲を狭めることをおすすめします。';
+      + '範囲を狭めることをおすすめします。';
   } else w.style.display = 'none';
   $('#go').disabled = !clips.length;
 }
@@ -1600,10 +1565,10 @@ $('#go').onclick = async () => {
   const onProg = (r, msg) => { $('#pbarf').style.width = Math.round(r*100)+'%'; $('#pstat').textContent = msg; };
   try {
     const t0 = performance.now();
-    const { blob, seconds, used, skipped, actual } = await mergeClips(clips, exTrim, onProg);
+    const { blob, seconds, used, skipped, actual } = await mergeClips(clips, onProg);
     const ms = Math.round(performance.now() - t0);
     const gap = actual == null ? 0 : Math.abs(actual - seconds);
-    const want = clips.reduce((a,c) => a + (exTrim ? Math.min(exTrim, c.durationSec||0) : (c.durationSec||0)), 0);
+    const want = clips.reduce((a,c) => a + (c.durationSec || 0), 0);
     onProg(1, `完成: ${fmtSec(seconds)} / ${fmtBytes(blob.size)}（${ms}ms）`
       + (gap > 0.5 ? ` / 検証: 実際は ${fmtSec(actual)}` : '')
       + (Math.abs(want - seconds) > 1 ? `\n記録時間の合計 ${fmtSec(want)} より ${fmtSec(Math.abs(want-seconds))} 短くなっています。「クリップの長さを調べる」で原因を確認してください` : ''));
@@ -1712,21 +1677,7 @@ $('#diag').onclick = async () => {
 /* ============================================================
    設定
    ============================================================ */
-function seg(el, items, cur, onPick){
-  el.innerHTML = '';
-  for (const [val, label] of items) {
-    const b = document.createElement('button');
-    b.textContent = label;
-    if (String(val) === String(cur)) b.className = 'on';
-    b.onclick = () => { onPick(val); saveCfg(); renderSet(); updateRecMeta(); };
-    el.appendChild(b);
-  }
-}
 function renderSet(){
-  seg($('#segDur'), DURS.map(d => [d, d+'秒']), cfg.dur, v => cfg.dur = Number(v));
-  seg($('#segFmt'), Object.entries(FMTS).map(([k,v]) => [k, v.label]), cfg.fmt, v => cfg.fmt = v);
-  seg($('#segPos'), Object.entries(POSS), cfg.pos, v => cfg.pos = v);
-  seg($('#segFit'), Object.entries(FITS), cfg.fit, v => cfg.fit = v);
   $('#stMime').textContent = MIME || '非対応';
   $('#stMic').textContent = liveTrack(curAudio)
     ? `${curAudio.label || '既定'}${curAudio.muted ? '（ミュート中）' : ''}`
@@ -1813,7 +1764,7 @@ document.querySelectorAll('#tabbar button').forEach(b => {
   await loadDayIndex();
   updateRecMeta();
   $('#flipLbl').textContent = cfg.facing === 'user' ? '前面' : '背面';
-  $('#hint').textContent = `タップで${cfg.dur}秒 / 長押しの間ずっと撮影（最大${MAXHOLD}秒）`;
+  $('#hint').textContent = `タップで${TAPSEC}秒 / 長押しの間ずっと撮影（最大${MAXHOLD}秒）`;
   if (Number(localStorage.getItem('vlogShots') || 0) >= 3) $('#hint').classList.add('hide');
   if (navigator.storage && navigator.storage.persist) {
     try {
