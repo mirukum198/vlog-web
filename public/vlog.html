@@ -161,6 +161,22 @@ body{display:flex;flex-direction:column}
 .danger{width:100%;padding:12px;border-radius:10px;border:1px solid #4a2a2a;
   background:#2a1717;color:#ff8f80;font-size:13px;margin-top:6px}
 .note{font-size:11px;color:var(--sub);line-height:1.7;margin-top:8px}
+/* ---- 認証 ---- */
+#gate{position:fixed;inset:0;z-index:200;background:var(--bg);display:flex;
+  flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px}
+#gate.off{display:none}
+#gate .card{width:100%;max-width:340px;background:var(--panel);border:1px solid var(--line);
+  border-radius:14px;padding:22px 20px;display:flex;flex-direction:column;gap:13px}
+#gate h1{margin:0;font-size:19px;font-weight:700;letter-spacing:.02em}
+#gate p{margin:0;font-size:13px;color:var(--sub);line-height:1.8}
+#gate input{width:100%;height:46px;border-radius:10px;border:1px solid var(--line);
+  background:#0e0f12;color:var(--fg);font-size:16px;padding:0 14px;font-family:inherit}
+#gate button{height:46px;border-radius:10px;border:0;background:var(--accent);color:#fff;
+  font-size:15px;font-weight:700}
+#gate .err{color:#ff8f80;font-size:13px;min-height:1.3em;line-height:1.6}
+#gate .warn{color:#ffc46b}
+#gate .foot{font-size:11px;color:var(--sub);text-align:center;line-height:1.7}
+
 #toast{position:fixed;left:50%;bottom:calc(84px + var(--safe-b));transform:translateX(-50%);
   background:#000d;border:1px solid var(--line);padding:10px 16px;border-radius:20px;
   font-size:13px;z-index:99;opacity:0;transition:opacity .2s;pointer-events:none;
@@ -169,6 +185,17 @@ body{display:flex;flex-direction:column}
 </style>
 </head>
 <body>
+
+<div id="gate">
+  <div class="card">
+    <h1>vlog-web</h1>
+    <p id="gateMsg">パスワードを入力してください。</p>
+    <input id="gatePw" type="password" autocomplete="current-password" placeholder="パスワード">
+    <button id="gateBtn">ログイン</button>
+    <div class="err" id="gateErr"></div>
+  </div>
+  <p class="foot">一度ログインすれば、次回からは入力不要です。<br>（有効期限が切れるまで保持されます）</p>
+</div>
 
 <div id="views">
 
@@ -250,7 +277,7 @@ body{display:flex;flex-direction:column}
         </div>
         <pre id="logOut"></pre>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.15</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.16</div>
     </div>
   </section>
 
@@ -1768,7 +1795,7 @@ document.querySelectorAll('#tabbar button').forEach(b => {
 /* ============================================================
    起動
    ============================================================ */
-(async function init(){
+async function boot(){
   ctx.fillStyle = '#000'; ctx.fillRect(0,0,CW,CH);
   await loadDayIndex();
   updateRecMeta();
@@ -1782,7 +1809,66 @@ document.querySelectorAll('#tabbar button').forEach(b => {
     } catch (e) { $('#stPersist').textContent = '不明'; }
   } else $('#stPersist').textContent = '非対応';
   if (!MIME) toast('この端末では録画できません（MediaRecorder 非対応）');
-})();
+}
+
+/* ============================================================
+   認証
+   合言葉そのものは持たず、SHA-256 の値だけを比べる。
+   ============================================================ */
+const PHASES = [
+  { hash:'22b58522aa3a7c149acbcfcbee17ba924a01a8fbcb0965a6102fa31b53ebe395',
+    end: new Date('2026-10-01T00:00:00+09:00') },
+];
+const ADMIN_HASH = 'd8acb55839a9f5b57fdcbfc34fce628ebcc7baae12d6c0001971fc5eb544e427';
+
+const sha256 = async (str) => {
+  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(b)).map(x => x.toString(16).padStart(2,'0')).join('');
+};
+/* いま有効な期の番号。どれも期限切れなら -1 */
+const phaseNow = () => PHASES.findIndex(p => new Date() < p.end);
+
+/* 認証済みかどうか。localStorage に残すので、閉じても再起動しても
+   期限まで入力を求めない。 */
+function authOk(){
+  try {
+    const a = JSON.parse(localStorage.getItem('vlogAuth') || 'null');
+    if (!a) return false;
+    if (a.admin) return true;
+    const p = PHASES[a.phase];
+    return !!p && new Date() < p.end;
+  } catch (e) { return false; }
+}
+const saveAuth = (v) => { try { localStorage.setItem('vlogAuth', JSON.stringify(v)); } catch (e) {} };
+
+function passGate(){ $('#gate').classList.add('off'); boot(); }
+
+function openGate(){
+  if (phaseNow() < 0) {
+    $('#gateMsg').innerHTML = '<span class="warn">利用期間が終了しています。</span><br>新しいパスワードを入力してください。';
+  }
+  setTimeout(() => { try { $('#gatePw').focus(); } catch (e) {} }, 80);
+}
+
+async function submitGate(){
+  const pw = $('#gatePw').value;
+  if (!pw) return;
+  const h = await sha256(pw);
+  const i = phaseNow();
+  if (h === ADMIN_HASH)              { saveAuth({ admin:true }); return passGate(); }
+  if (i >= 0 && h === PHASES[i].hash){ saveAuth({ phase:i });    return passGate(); }
+
+  $('#gateErr').textContent = PHASES.some(p => p.hash === h)
+    ? '利用期間が終了しました。' : 'パスワードが違います。';
+  $('#gatePw').value = '';
+  try { $('#gatePw').focus(); } catch (e) {}
+}
+$('#gateBtn').onclick = submitGate;
+$('#gatePw').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitGate(); });
+
+if (authOk()) passGate(); else openGate();
 </script>
+
+<!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "e9fc53c60ae3411dadf7237d14ecca7c"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>
