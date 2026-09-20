@@ -258,6 +258,7 @@ body{display:flex;flex-direction:column}
         <div class="stat"><span>タップ撮影</span><span>2秒 固定（長押しは最大30秒）</span></div>
         <div class="stat"><span>日付の焼きこみ</span><span>右下 固定</span></div>
         <div class="stat"><span>映像の収め方</span><span>全体 固定</span></div>
+        <div class="stat"><span>前面カメラ</span><span>左右反転（鏡と同じ）</span></div>
         <div class="stat"><span>形式</span><span id="stMime">-</span></div>
         <div class="stat"><span>マイク</span><span id="stMic">-</span></div>
         <div class="stat"><span>使用中のカメラ</span><span id="stCam">-</span></div>
@@ -277,7 +278,7 @@ body{display:flex;flex-direction:column}
         </div>
         <pre id="logOut"></pre>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.16</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.17</div>
     </div>
   </section>
 
@@ -650,7 +651,13 @@ function drawFrame(src, dt){
     const base = Math.min(CW/vw, CH/vh);   // 映像の全体を入れる（足りない分は黒帯）
     const sc = base * digitalZoom;
     const w = vw*sc, h = vh*sc;
+    /* 前面カメラは左右を反転して、鏡に映ったのと同じ向きにする。
+       このアプリは見えている画面がそのまま録画されるので、
+       反転しないと自分だけ左右が逆に写る。日付は反転させない。 */
+    const mirror = cfg.facing === 'user';
+    if (mirror) { ctx.save(); ctx.translate(CW, 0); ctx.scale(-1, 1); }
     ctx.drawImage(src, (CW-w)/2, (CH-h)/2, w, h);
+    if (mirror) ctx.restore();
   }
   drawStamp(dt);
 }
