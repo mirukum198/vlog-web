@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="1日を2秒ずつ撮りためる、iPhone 向けの無料Webアプリ vlog-web の使いかた。">
+<meta name="color-scheme" content="light dark">
+<title>vlog-web のはじめかた</title>
+<!--
+  ▼ 加工するときの差し替えポイント
+    1. URL         … 「https://vlog-web.mirukum198.workers.dev/」を検索すると4か所
+    2. 送り主の名前 … 最下部の footer
+    3. 画面イメージ … .phone のブロック。文字はすべて HTML なので直接書き換えられます。
+                      実機の写真に替える場合は .phone ごと <img> に差し替え
+    4. 削る場合     … <section> 単位で消せます（見出しと中身が1つの section に入っています）
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=DM+Mono:wght@400;500&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap">
+<style>
+:root{
+  --ground:#F2F4F7;
+  --surface:#FFFFFF;
+  --surface-2:#E6EAF0;
+  --ink:#161B22;
+  --sub:#566070;
+  --line:#CDD4DD;
+  --rec:#D23B25;
+  --rec-soft:#FBE4DF;
+  --ok:#23804D;
+  --frame:#15181E;
+  --frame-2:#1E222A;
+  --frame-ink:#E9ECF1;
+  --frame-sub:#8D95A5;
+  --display:"Dela Gothic One","Hiragino Sans","Noto Sans JP",sans-serif;
+  --body:"Zen Kaku Gothic New","Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif;
+  --mono:"DM Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0E0F12; --surface:#17191F; --surface-2:#20242C; --ink:#E9ECF1; --sub:#98A1B1;
+    --line:#2E333D; --rec:#F0604A; --rec-soft:#3A1F1B; --ok:#4CB877;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0E0F12; --surface:#17191F; --surface-2:#20242C; --ink:#E9ECF1; --sub:#98A1B1;
+  --line:#2E333D; --rec:#F0604A; --rec-soft:#3A1F1B; --ok:#4CB877;
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--body);
+  font-size:16px;line-height:1.85;font-feature-settings:"palt" 1;
+  padding-inline:20px;padding-block:0}
+.wrap{max-width:860px;margin:0 auto;padding-block:48px 80px;
+  display:flex;flex-direction:column;gap:64px}
+section{display:flex;flex-direction:column;gap:16px}
+p{margin:0;max-width:38em}
+h1,h2,h3{margin:0;text-wrap:balance;font-weight:400}
+h1{font-family:var(--display);font-size:clamp(32px,6vw,50px);line-height:1.22;letter-spacing:.01em}
+h2{font-family:var(--display);font-size:clamp(21px,3.4vw,26px);line-height:1.35}
+h3{font-weight:700;font-size:16px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;color:var(--sub);
+  display:flex;align-items:center;gap:9px}
+.eyebrow .dot{width:9px;height:9px;border-radius:50%;background:var(--rec)}
+.lead{font-size:18.5px;line-height:1.85}
+.note{font-size:13.5px;color:var(--sub);line-height:1.75}
+.kw{font-weight:700}
+
+/* 始め方の3ステップ */
+.steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin:0;padding:0;list-style:none}
+.steps li{background:var(--surface);border:1px solid var(--line);border-radius:12px;
+  padding:16px 18px;display:flex;flex-direction:column;gap:6px}
+.steps .n{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;color:var(--rec)}
+.steps b{font-size:15.5px}
+.steps span{font-size:13.5px;color:var(--sub);line-height:1.7}
+
+/* URL */
+.url{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 14px;
+  background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--rec);
+  border-radius:10px;padding:14px 18px}
+.url .lbl{font-size:12px;letter-spacing:.1em;color:var(--sub);font-family:var(--mono)}
+.url a{font-family:var(--mono);font-size:15px;color:var(--ink);word-break:break-all}
+
+/* 画面イメージ */
+.shots{display:flex;flex-wrap:wrap;gap:26px;justify-content:flex-start}
+figure{margin:0;display:flex;flex-direction:column;gap:9px;width:248px;max-width:100%}
+figcaption{font-size:13px;color:var(--sub);line-height:1.65}
+figcaption b{color:var(--ink);display:block;font-size:14px}
+.phone{width:100%;aspect-ratio:9/18.5;background:var(--frame);border-radius:26px;
+  padding:7px;box-shadow:0 2px 14px rgba(0,0,0,.14);overflow:hidden}
+.scr{height:100%;background:var(--frame);border-radius:20px;overflow:hidden;
+  display:flex;flex-direction:column;color:var(--frame-ink);font-size:9.5px;line-height:1.5}
+
+/* 撮影画面 */
+.stage{flex:1;position:relative;background:linear-gradient(170deg,#2B3442 0%,#3C4A3A 55%,#6B5A3C 100%);
+  display:flex;align-items:flex-start;justify-content:center;min-height:0}
+.stage .hint{margin-top:7px;font-size:7.5px;color:#ffffffcc;text-shadow:0 1px 2px #0009;text-align:center;padding:0 8px}
+.stage .stamp{position:absolute;right:8px;bottom:7px;font-family:var(--mono);font-size:8.5px;
+  color:#fff;text-shadow:0 1px 3px #000c;letter-spacing:.01em}
+.zoomrow{background:var(--frame-2);display:flex;justify-content:center;padding:5px 0 0}
+.zoompill{display:flex;gap:3px;background:#000;border:1px solid #2E333D;border-radius:12px;padding:2px}
+.zoompill span{width:26px;text-align:center;font-family:var(--mono);font-size:8px;padding:2px 0;border-radius:10px;color:#fff}
+.zoompill .on{background:#fff;color:#111}
+.recbar{background:var(--frame-2);display:flex;align-items:center;gap:7px;padding:7px 8px 9px}
+.flip{width:30px;height:30px;border:1px solid #2E333D;border-radius:8px;background:#20242c;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:7px;gap:1px;flex:none}
+.shoot{width:38px;height:38px;border-radius:50%;background:var(--rec);border:2.5px solid #fff;flex:none}
+.rmeta{font-size:7.5px;color:var(--frame-sub);line-height:1.55;min-width:0}
+.rmeta b{display:block;color:var(--frame-ink);font-family:var(--mono);font-size:8.5px;font-weight:500}
+.tabbar{background:var(--frame-2);border-top:1px solid #2E333D;display:flex}
+.tabbar span{flex:1;text-align:center;font-size:7px;color:var(--frame-sub);padding:5px 0 6px;line-height:1.35}
+.tabbar span i{display:block;font-style:normal;font-size:9px}
+.tabbar .on{color:#fff}
+
+/* 一覧画面 */
+.ltop{background:var(--frame-2);display:flex;align-items:center;gap:6px;padding:7px 8px;border-bottom:1px solid #2E333D}
+.ltop .l{flex:1;font-size:7.5px;color:var(--frame-sub)}
+.ltop .btn{background:#fff;color:#111;border-radius:6px;padding:3px 7px;font-size:7.5px;font-weight:700}
+.dayhd{display:flex;align-items:center;gap:6px;padding:6px 8px;border-bottom:1px solid #2E333D}
+.dayhd .t{flex:1}
+.dayhd b{display:block;font-size:9px}
+.dayhd small{font-size:7px;color:var(--frame-sub);font-family:var(--mono)}
+.dayhd .btn{border:1px solid #2E333D;background:#20242c;border-radius:6px;padding:3px 7px;font-size:7.5px}
+.thumbs{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;padding:6px}
+.th{aspect-ratio:9/16;border-radius:4px;position:relative;overflow:hidden}
+.th i{position:absolute;left:2px;top:1px;font-style:normal;font-family:var(--mono);font-size:6.5px;
+  color:#fff;text-shadow:0 1px 2px #000}
+.th em{position:absolute;right:2px;bottom:2px;font-style:normal;font-family:var(--mono);font-size:6px;
+  background:#000a;border-radius:3px;padding:0 2px;color:#fff}
+
+/* 書き出しシート */
+.sheet{margin-top:auto;background:var(--frame-2);border-radius:14px 14px 0 0;padding:10px;
+  display:flex;flex-direction:column;gap:6px}
+.sheet h4{margin:0;font-size:10px;font-weight:700}
+.sheet .sub{font-size:7px;color:var(--frame-sub)}
+.sheet .lbl{font-size:7px;color:var(--frame-sub);margin-top:2px}
+.segs{display:flex;gap:3px}
+.segs span{flex:1;text-align:center;font-size:7px;padding:4px 0;border-radius:5px;
+  border:1px solid #2E333D;background:#20242c;color:var(--frame-sub)}
+.segs .on{background:#fff;color:#111;border-color:#fff;font-weight:700}
+.sum{background:#20242c;border-radius:7px;padding:6px 8px;font-size:7.5px;display:flex;flex-direction:column;gap:2px}
+.sum div{display:flex;justify-content:space-between}
+.sum b{font-family:var(--mono);font-weight:500}
+.go{background:var(--ok);color:#fff;text-align:center;border-radius:8px;padding:7px;font-size:9px;font-weight:700}
+
+/* ポイントの比較 */
+.cmp{display:flex;flex-wrap:wrap;gap:18px}
+.cmpcard{width:186px;max-width:100%;display:flex;flex-direction:column;gap:9px}
+.cmpframe{aspect-ratio:9/16;max-width:100%;border-radius:10px;position:relative;overflow:hidden;
+  border:1px solid var(--line)}
+.cmpst{position:absolute;right:9px;bottom:8px;font-family:var(--mono);font-size:10.5px;color:#fff;
+  text-shadow:0 1px 3px #000c;letter-spacing:.01em}
+.verdict{font-size:13px;line-height:1.7;color:var(--sub);padding-left:11px;border-left:3px solid var(--line)}
+.verdict b{display:block;font-size:13.5px}
+.verdict.weak{border-left-color:var(--sub)}
+.verdict.weak b{color:var(--sub)}
+.verdict.good{border-left-color:var(--ok)}
+.verdict.good b{color:var(--ok)}
+
+/* 期間の図 */
+.rangefig{display:flex;flex-direction:column;align-items:flex-start;gap:0;
+  background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px;
+  max-width:420px}
+.rsegs{display:flex;gap:5px;flex-wrap:wrap}
+.rsegs span{font-size:12.5px;padding:5px 11px;border-radius:7px;border:1px solid var(--line);
+  background:var(--surface-2);color:var(--sub)}
+.rsegs .on{background:var(--ink);color:var(--ground);border-color:var(--ink);font-weight:700}
+.rarrow{width:2px;height:22px;background:var(--line);margin:8px 0 8px 22px;position:relative}
+.rarrow::after{content:"";position:absolute;left:-4px;bottom:-1px;width:0;height:0;
+  border-left:5px solid transparent;border-right:5px solid transparent;border-top:7px solid var(--line)}
+.rout{display:flex;flex-direction:column;gap:2px}
+.rout b{font-size:15px}
+.rout span{font-size:13px;color:var(--sub)}
+
+/* 表 */
+.tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);
+  border-radius:11px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;min-width:420px;font-size:14.5px;line-height:1.7}
+th,td{text-align:left;vertical-align:top;padding:11px 15px;border-bottom:1px solid var(--line)}
+tr:last-child td{border-bottom:0}
+th{font-size:11.5px;letter-spacing:.07em;color:var(--sub);font-weight:500;background:var(--surface-2);white-space:nowrap}
+td:first-child{font-weight:700;width:34%}
+
+/* よくある質問 */
+.qa{display:flex;flex-direction:column;gap:2px}
+details{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:0 16px}
+details+details{margin-top:8px}
+summary{cursor:pointer;padding:13px 0;font-weight:700;font-size:15px;list-style:none;
+  display:flex;gap:10px;align-items:baseline}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"Q";font-family:var(--mono);color:var(--rec);font-size:13px;flex:none}
+summary:focus-visible{outline:2px solid var(--rec);outline-offset:3px;border-radius:6px}
+details p{padding:0 0 14px 24px;font-size:14.5px;color:var(--sub)}
+
+/* 注意点 */
+.cautions{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:12px}
+.cautions li{display:flex;gap:12px;align-items:baseline}
+.cautions li::before{content:"";width:7px;height:7px;border-radius:2px;background:var(--rec);flex:none;transform:translateY(-1px)}
+.cautions b{display:block}
+.cautions span{font-size:14px;color:var(--sub);line-height:1.75}
+
+footer{border-top:1px solid var(--line);padding-top:20px;font-size:13px;color:var(--sub)}
+/* 手順（縦並びの番号つき） */
+.howto{counter-reset:h;margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+.howto li{counter-increment:h;position:relative;padding-left:34px;font-size:14.5px;line-height:1.8}
+.howto li::before{content:counter(h);position:absolute;left:0;top:4px;
+  width:22px;height:22px;border-radius:50%;
+  background:var(--rec);color:#fff;font-family:var(--mono);font-size:11.5px;
+  display:flex;align-items:center;justify-content:center}
+.howto .k{font-family:var(--mono);font-size:13px;background:var(--surface-2);
+  border-radius:5px;padding:1px 6px;white-space:nowrap}
+
+/* 囲み */
+.callout{background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--rec);
+  border-radius:10px;padding:16px 18px;display:flex;flex-direction:column;gap:8px}
+.callout b{font-size:15px}
+.callout p{margin:0;font-size:14px;color:var(--sub);line-height:1.8}
+
+@media (max-width:560px){
+  .wrap{gap:52px;padding-block:32px 64px}
+  .shots{gap:20px;justify-content:center}
+  figure{width:100%;max-width:300px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header style="display:flex;flex-direction:column;gap:18px">
+    <div class="eyebrow"><span class="dot"></span>iPhone で使える 無料のWebアプリ</div>
+    <h1>1日を、2秒ずつ<br>撮りためる。</h1>
+    <p class="lead">気になった瞬間に2秒だけ撮る。それだけで1本のショートムービーになります。編集はいりません。このツールは<span class="kw">日付・曜日・時刻を映像そのものに焼きこみ</span>、<span class="kw">1日でも1週間でも1ヶ月でも</span>まとめて1本にできます。</p>
+    <div class="url">
+      <span class="lbl">ひらく</span>
+      <a href="https://vlog-web.mirukum198.workers.dev/">https://vlog-web.mirukum198.workers.dev/</a>
+    </div>
+    <p class="note">アカウント登録はありません。メールアドレスも電話番号も聞きません。開くときに<span class="kw">合言葉</span>だけ必要です（お知らせします）。iPhone の Safari で開いて使います。</p>
+  </header>
+
+  <section>
+    <h2>このツールのポイント</h2>
+    <p>2秒ずつ撮りためるアプリはほかにもあります。このツールが違うのは、次の2点です。どちらも「あとから見返すとき」に効いてきます。</p>
+
+    <h3>1. 日付・曜日・時刻が、映像そのものに焼きこまれる</h3>
+    <div class="cmp">
+      <div class="cmpcard">
+        <div class="cmpframe" style="background:linear-gradient(165deg,#2F3A46,#54604A)">
+          <div class="cmpst">07:12</div>
+        </div>
+        <div class="verdict weak"><b>時刻だけだと</b>何月何日のものか分からない。1年後に見ると、なおさら思い出せない</div>
+      </div>
+      <div class="cmpcard">
+        <div class="cmpframe" style="background:linear-gradient(165deg,#2F3A46,#54604A)">
+          <div class="cmpst">2026-09-20 Sun 07:12</div>
+        </div>
+        <div class="verdict good"><b>このツール</b>2026年9月20日、日曜の朝だと、映像を見るだけで分かる</div>
+      </div>
+    </div>
+    <p>動画ファイルは「いつ撮ったか」の情報を中に持っていますが、これはコピーや転送、編集、書き出しのたびに<span class="kw">変わったり失われたりします</span>。そうなると、写真アプリの中で「これはいつの動画だったか」が分からなくなります。</p>
+    <p>このツールは、撮る瞬間に映像へ直接書きこみます。だから<span class="kw">どこへ移しても、何年たっても消えません</span>。曜日まで入るので、平日か休日かも一目で分かります。</p>
+
+    <h3>2. まとめる期間を、自分で選べる</h3>
+    <div class="rangefig">
+      <div class="rsegs"><span class="on">この日</span><span>1週間</span><span>1ヶ月</span><span>すべて</span></div>
+      <div class="rarrow" aria-hidden="true"></div>
+      <div class="rout"><b>1本の動画</b><span>選んだ期間ぶんが、撮った順につながる</span></div>
+    </div>
+    <p>1日単位だけでなく、1週間・1ヶ月・これまで全部、どれでも1本にできます。「今週のまとめ」も「今月のまとめ」も、あとから何度でも作り直せます。撮ったクリップは残るので、同じ素材から別の期間のまとめを何本作ってもかまいません。</p>
+    <p class="note">つなぐ処理は動画を作り直さない方式なので、100本つないでも1秒かかりません。画質も落ちません。</p>
+  </section>
+
+  <section>
+    <h2>こんなときに</h2>
+    <p>まとまった動画を撮るのは身構えますが、2秒なら身構えません。「あとで見返したいけれど、わざわざ撮るほどでもない」くらいのものが向いています。</p>
+    <div class="tscroll">
+      <table>
+        <tbody>
+          <tr><td>いつもの1日</td><td>通勤路、昼ごはん、帰り道。ふつうの日ほど、あとで見ると面白い</td></tr>
+          <tr><td>旅行・おでかけ</td><td>写真だと撮り逃す「音と動き」が残る。移動中の車窓など</td></tr>
+          <tr><td>子ども・ペット</td><td>一瞬の表情。長回ししないので、見返すのも苦になりません</td></tr>
+          <tr><td>作業の記録</td><td>植物の成長、部屋の片づけ、練習の様子。同じ場所を毎日2秒ずつ</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>はじめかた</h2>
+    <ol class="steps">
+      <li><span class="n">STEP 1</span><b>Safari で開く</b><span>上のURLを開きます。ほかのブラウザではカメラが使えないことがあります</span></li>
+      <li><span class="n">STEP 2</span><b>ホーム画面に追加</b><span>撮り始める前に、いちばん先にこれをします。手順は下にあります</span></li>
+      <li><span class="n">STEP 3</span><b>合言葉を入れる</b><span>お知らせした合言葉を入力します。入力は1回だけです</span></li>
+      <li><span class="n">STEP 4</span><b>カメラとマイクを許可</b><span>「カメラを開始」を押すと聞かれるので、両方を許可します</span></li>
+    </ol>
+
+    <h3>ホーム画面への追加のしかた</h3>
+    <p>このツールは、ホーム画面に追加してアプリのように使う前提で作っています。<span class="kw">撮り始める前に</span>追加してください。</p>
+    <ol class="howto">
+      <li>Safari の画面のいちばん下にある<b>共有ボタン</b>（四角から上向きの矢印が出ているマーク）を押します</li>
+      <li>出てきたメニューを指で下にたどって、<span class="k">ホーム画面に追加</span>を押します</li>
+      <li>名前はそのままでかまいません。右上の<span class="k">追加</span>を押します</li>
+      <li>ホーム画面にアイコンができます。<b>次からは、このアイコンから開きます</b></li>
+    </ol>
+    <div class="callout">
+      <b>Safari のタブと、ホーム画面のアイコンは別ものとして扱われます</b>
+      <p>iPhone では、ホーム画面から開いたときと Safari のタブで開いたときで、保存場所が分かれています。Safari のタブで撮った動画は、ホーム画面のアイコンから開くと出てきません。合言葉ももう一度聞かれます。<br>だから、<span class="kw">先にホーム画面へ追加して、そこから撮り始める</span>のが確実です。</p>
+    </div>
+    <p class="note">ホーム画面に追加しておくと、撮った動画が消えにくくなる効果もあります（理由は下の「知っておいてほしいこと」に書いています）。</p>
+
+    <h3>合言葉について</h3>
+    <p>このツールは、開くときに合言葉（パスワード）を1回だけ入力します。知り合いのあいだで試している段階のためで、<span class="kw">アカウントを作るわけではありません</span>。</p>
+    <ul class="cautions">
+      <li><div><b>入力は基本1回だけ</b><span>一度入れると端末が覚えます。閉じても、iPhone を再起動しても、次からは聞かれません。</span></div></li>
+      <li><div><b>期限があります</b><span>合言葉には有効期限があります。切れると次の合言葉を聞かれるので、新しいものはそのつどお知らせします。それまでに撮った動画が消えることはありません。</span></div></li>
+      <li><div><b>撮った動画とは関係ありません</b><span>合言葉は入口を開けるだけのものです。動画がどこかに送られたり、合言葉と結びつけて管理されたりすることはありません。</span></div></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>使い方</h2>
+    <p>画面は3つだけです。下のタブで切り替えます。</p>
+
+    <div class="shots">
+      <figure>
+        <div class="phone">
+          <div class="scr">
+            <div class="stage">
+              <div class="hint">タップで2秒 / 長押しの間ずっと撮影（最大30秒）</div>
+              <div class="stamp">2026-09-20 Sun 07:12</div>
+            </div>
+            <div class="zoomrow">
+              <div class="zoompill"><span>0.5×</span><span class="on">1×</span><span>2×</span></div>
+            </div>
+            <div class="recbar">
+              <div class="flip"><span>⇄</span><span>背面</span></div>
+              <div class="shoot"></div>
+              <div class="rmeta"><b>2026-09-20 Sun 07:12</b>本日 3本 / 全 42本<br>音声あり</div>
+            </div>
+            <div class="tabbar">
+              <span class="on"><i>●</i>撮影</span><span><i>▦</i>一覧</span><span><i>⚙</i>設定</span>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>① 撮る</b>赤いボタンを<span class="kw">タップすると2秒</span>。押したままにすると、離すまで撮り続けます（最大30秒）。撮り終わると確認画面が出るので、「保存」か「撮り直し」を選びます。</figcaption>
+      </figure>
+
+      <figure>
+        <div class="phone">
+          <div class="scr">
+            <div class="ltop"><div class="l">5日 · 42本</div><div class="btn">まとめて書き出し</div></div>
+            <div class="dayhd"><div class="t"><b>9月20日(日) · 今日</b><small>8本 · 16秒</small></div><div class="btn">書き出し</div></div>
+            <div class="thumbs">
+              <div class="th" style="background:linear-gradient(160deg,#3A4A5C,#5E6E52)"><i>07:12</i><em>2.0s</em></div>
+              <div class="th" style="background:linear-gradient(160deg,#6B5A3C,#8A6E4A)"><i>08:40</i><em>2.0s</em></div>
+              <div class="th" style="background:linear-gradient(160deg,#41503F,#6E7A52)"><i>12:03</i><em>5.4s</em></div>
+              <div class="th" style="background:linear-gradient(160deg,#55404A,#7C5560)"><i>12:55</i><em>2.0s</em></div>
+              <div class="th" style="background:linear-gradient(160deg,#37485C,#4E6A7C)"><i>15:21</i><em>2.0s</em></div>
+              <div class="th" style="background:linear-gradient(160deg,#5C4A37,#7C6248)"><i>18:06</i><em>2.0s</em></div>
+            </div>
+            <div class="dayhd" style="border-top:1px solid #2E333D"><div class="t"><b>9月19日(土) · 昨日</b><small>11本 · 24秒</small></div><div class="btn">書き出し</div></div>
+            <div class="thumbs">
+              <div class="th" style="background:linear-gradient(160deg,#4A3C50,#6A5570)"><i>06:48</i><em>2.0s</em></div>
+              <div class="th" style="background:linear-gradient(160deg,#3F4F44,#5E7059)"><i>09:15</i><em>2.0s</em></div>
+              <div class="th" style="background:linear-gradient(160deg,#5A4636,#7A5E44)"><i>11:02</i><em>3.1s</em></div>
+            </div>
+            <div class="tabbar" style="margin-top:auto">
+              <span><i>●</i>撮影</span><span class="on"><i>▦</i>一覧</span><span><i>⚙</i>設定</span>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>② 見る</b>日ごとにまとまって並びます。サムネイルを押すとその1本を再生でき、そこから1本だけ写真アプリに保存することもできます。</figcaption>
+      </figure>
+
+      <figure>
+        <div class="phone">
+          <div class="scr">
+            <div class="ltop"><div class="l">5日 · 42本</div><div class="btn">まとめて書き出し</div></div>
+            <div class="dayhd"><div class="t"><b>9月20日(日) · 今日</b><small>8本 · 16秒</small></div><div class="btn">書き出し</div></div>
+            <div class="thumbs" style="opacity:.38">
+              <div class="th" style="background:linear-gradient(160deg,#3A4A5C,#5E6E52)"></div>
+              <div class="th" style="background:linear-gradient(160deg,#6B5A3C,#8A6E4A)"></div>
+              <div class="th" style="background:linear-gradient(160deg,#41503F,#6E7A52)"></div>
+            </div>
+            <div class="sheet">
+              <h4>まとめて書き出し</h4>
+              <div class="sub">基準日: 9月20日(日) · 今日</div>
+              <div class="lbl">範囲</div>
+              <div class="segs"><span class="on">この日</span><span>1週間</span><span>1ヶ月</span><span>すべて</span></div>
+              <div class="sum">
+                <div><span>クリップ数</span><b>8 本</b></div>
+                <div><span>できあがる長さ</span><b>16秒</b></div>
+                <div><span>推定サイズ</span><b>8.9 MB</b></div>
+              </div>
+              <div class="go">書き出して保存</div>
+            </div>
+          </div>
+        </div>
+        <figcaption><b>③ 書き出す</b>範囲を選んで「書き出して保存」を押すと1本につながります。共有シートが開くので<span class="kw">「ビデオを保存」</span>で写真アプリに入ります。</figcaption>
+      </figure>
+    </div>
+    <p class="note">上の3つは画面イメージです。実際の見た目は端末や撮った内容で変わります。</p>
+  </section>
+
+  <section>
+    <h2>動画はどこにも送られません</h2>
+    <p>撮った動画は<span class="kw">この iPhone の中だけ</span>に保存されます。どこかのサーバーに送ったり、誰かに見られたりすることはありません。撮るときも書き出すときも通信は使わないので、通信量はほとんどかかりません。</p>
+    <div class="tscroll">
+      <table>
+        <tbody>
+          <tr><td>アカウント</td><td>不要。メールアドレスも電話番号も聞きません</td></tr>
+          <tr><td>料金</td><td>無料</td></tr>
+          <tr><td>広告</td><td>なし</td></tr>
+          <tr><td>通信</td><td>ページを開くときだけ。撮った動画は送りません</td></tr>
+          <tr><td>アクセス解析</td><td>ページが何回開かれたかだけ記録しています。誰が開いたか、何を撮ったかは分かりません</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>知っておいてほしいこと</h2>
+    <ul class="cautions">
+      <li><div><b>残したい動画は、写真アプリに保存してください</b><span>アプリの中の保存場所は、iPhone の「サイトのデータを削除」やホーム画面からの削除で消えます。バックアップではありません。大事なものは書き出して写真アプリへ。</span></div></li>
+      <li><div><b>ホーム画面に追加しておくと消えにくくなります</b><span>Safari は7日間使われなかったサイトのデータを片づけることがあります。ホーム画面に追加しておくと、その対象から外れます。</span></div></li>
+      <li><div><b>撮る時間を知らせる機能はありません</b><span>「1時間ごとに撮って」という通知は出せません。気づいたときに自分で開いて撮る使い方になります。</span></div></li>
+      <li><div><b>iPhone の Safari 向けです</b><span>ほかのブラウザや Android では確認していません。カメラが開かない場合があります。</span></div></li>
+      <li><div><b>機種を変えると引き継げません</b><span>端末の中に保存しているため、新しい端末には移せません。写真アプリに保存したものは残ります。</span></div></li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>よくある質問</h2>
+    <div class="qa">
+      <details>
+        <summary>どれくらい容量を使いますか？</summary>
+        <p>2秒の動画1本でおよそ1.1MBです。1日16本撮ると1か月でおよそ500MBになります。設定画面で今の使用量を確認できます。いらない日のぶんは削除できます。</p>
+      </details>
+      <details>
+        <summary>音は入りますか？</summary>
+        <p>入ります。マイクの許可が必要です。音が入らなかったクリップは、撮った直後の確認画面に「音声なし」と出るので、その場で撮り直せます。</p>
+      </details>
+      <details>
+        <summary>何本まで撮れますか？</summary>
+        <p>上限は決めていません。iPhone の空き容量しだいです。設定画面に、あとどれくらい保存できるかの目安が出ます。</p>
+      </details>
+      <details>
+        <summary>1ヶ月ぶんをまとめると、どれくらい待ちますか？</summary>
+        <p>つなぐ処理は一瞬です。動画を作り直さず、切って貼るだけの方法を使っているため、100本つないでも1秒かかりません。</p>
+      </details>
+      <details>
+        <summary>撮った動画に日付を入れたくないのですが</summary>
+        <p>いまは右下に必ず入ります。入れない設定はありません。</p>
+      </details>
+      <details>
+        <summary>ズームはできますか？</summary>
+        <p>0.5倍・1倍・2倍が選べます。0.5倍は超広角レンズに切り替わります（対応していない機種では選べません）。</p>
+      </details>
+      <details>
+        <summary>合言葉を忘れました／「期限が切れました」と出ます</summary>
+        <p>お知らせした相手に聞いてください。期限切れのときは新しい合言葉をお伝えします。入れ直しても、それまでに撮った動画は消えません。</p>
+      </details>
+      <details>
+        <summary>ホーム画面に追加せずに使ってもいいですか？</summary>
+        <p>使えますが、おすすめしません。Safari のタブのままだと、しばらく開かない間に撮った動画が消えることがあります。また、あとからホーム画面に追加しても、Safari のタブで撮った動画はそちらには出てきません。</p>
+      </details>
+      <details>
+        <summary>撮ったあとに消せますか？</summary>
+        <p>消せます。一覧からサムネイルを押して「削除」です。設定画面からまとめて全部消すこともできます。</p>
+      </details>
+    </div>
+  </section>
+
+  <section>
+    <h2>まずは今日、3本だけ</h2>
+    <p>朝・昼・夜に1本ずつ。それだけで、その日が6秒のムービーになります。続けるほど見返すのが楽しくなるので、まずは気楽に始めてみてください。</p>
+    <div class="url">
+      <span class="lbl">ひらく</span>
+      <a href="https://vlog-web.mirukum198.workers.dev/">https://vlog-web.mirukum198.workers.dev/</a>
+    </div>
+  </section>
+
+  <footer>vlog-web ・ iPhone の Safari 向け ・ 2026年9月</footer>
+</div>
+
+<!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "e9fc53c60ae3411dadf7237d14ecca7c"}'></script><!-- End Cloudflare Web Analytics -->
+</body>
+</html>

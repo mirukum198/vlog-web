@@ -176,6 +176,7 @@ body{display:flex;flex-direction:column}
 #gate .err{color:#ff8f80;font-size:13px;min-height:1.3em;line-height:1.6}
 #gate .warn{color:#ffc46b}
 #gate .foot{font-size:11px;color:var(--sub);text-align:center;line-height:1.7}
+#gate .foot a{color:var(--accent)}
 
 #toast{position:fixed;left:50%;bottom:calc(84px + var(--safe-b));transform:translateX(-50%);
   background:#000d;border:1px solid var(--line);padding:10px 16px;border-radius:20px;
@@ -194,7 +195,8 @@ body{display:flex;flex-direction:column}
     <button id="gateBtn">ログイン</button>
     <div class="err" id="gateErr"></div>
   </div>
-  <p class="foot">一度ログインすれば、次回からは入力不要です。<br>（有効期限が切れるまで保持されます）</p>
+  <p class="foot">一度ログインすれば、次回からは入力不要です。<br>（有効期限が切れるまで保持されます）<br>
+    <a href="/intro.html" target="_blank" rel="noopener">はじめかた・使いかたを見る</a></p>
 </div>
 
 <div id="views">
@@ -277,7 +279,10 @@ body{display:flex;flex-direction:column}
         </div>
         <pre id="logOut"></pre>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.18</div>
+      <div class="row" style="text-align:center;font-size:12px">
+        <a href="/intro.html" target="_blank" rel="noopener" style="color:var(--accent)">はじめかた・使いかた</a>
+      </div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.19</div>
     </div>
   </section>
 
