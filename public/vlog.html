@@ -282,7 +282,7 @@ body{display:flex;flex-direction:column}
       <div class="row" style="text-align:center;font-size:12px">
         <a href="/intro.html" target="_blank" rel="noopener" style="color:var(--accent)">はじめかた・使いかた</a>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.20</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.21</div>
     </div>
   </section>
 
@@ -1587,9 +1587,15 @@ async function recordTitleClip(from, to, days, n, sec){
   const withAudio = liveTrack(at);
   if (withAudio) { try { cs.addTrack(at); at.enabled = false; } catch (e) {} }
 
+  /* 途中で失敗しても本編の録音を巻き添えにしないよう、必ず元へ戻す */
+  const restore = () => {
+    cs.getVideoTracks().forEach(t => { try { t.stop(); } catch (e) {} });
+    if (withAudio) { try { at.enabled = true; } catch (e) {} }
+  };
+
   let rec;
   try { rec = new MediaRecorder(cs, { mimeType:MIME, videoBitsPerSecond:VBPS }); }
-  catch (e) { if (withAudio) { try { at.enabled = true; } catch (e2) {} } return null; }
+  catch (e) { restore(); logEvent('表紙', 'MediaRecorder を作れず ' + (e.message || e)); return null; }
 
   const chunks = [];
   const pack = () => chunks.length ? new Blob(chunks, { type:CONTAINER }) : null;
@@ -1604,15 +1610,17 @@ async function recordTitleClip(from, to, days, n, sec){
   const tick = () => { if (!alive) return; drawTitleCard(g, from, to, days, n, sec); requestAnimationFrame(tick); };
   requestAnimationFrame(tick);
 
-  rec.start(1000);
+  try { rec.start(1000); }
+  catch (e) { alive = false; restore(); logEvent('表紙', '録画を始められず ' + (e.message || e)); return null; }
+
   await new Promise(r => setTimeout(r, TITLESEC * 1000));
   try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {}
   /* onstop が来ないことがあるので、待ちきりにはしない */
   const blob = await Promise.race([done, new Promise(r => setTimeout(() => r(pack()), 4000))]);
 
   alive = false;
-  cs.getVideoTracks().forEach(t => { try { t.stop(); } catch (e) {} });
-  if (withAudio) { try { at.enabled = true; } catch (e) {} }
+  restore();
+  logEvent('表紙', `音声=${withAudio ? 'あり' : 'なし'} ${blob ? (blob.size/1000).toFixed(0)+'KB' : '空'}`);
   return blob;
 }
 
@@ -1622,12 +1630,23 @@ async function titleClipFor(clips){
   const dates = [...new Set(clips.map(c => c.date))].sort();
   const from = dates[0], to = dates[dates.length-1];
   const sec = clips.reduce((a,c) => a + (c.durationSec || 0), 0);
+
+  const cp = await parseClip(clips[0].blob);
+  if (!cp) return { from, to, reason:'本編を確認できませんでした' };
+
+  /* 本編に音声があるなら、表紙にも同じマイクが要る。
+     書き出しはカメラを開かずに行えるため、ここで確保しておく。 */
+  if (cp.tracks.some(t => t.kind === 'audio') && !liveTrack(curAudio)) await ensureAudio();
+
   const blob = await recordTitleClip(from, to, dates.length, clips.length, sec);
   if (!blob) return { from, to, reason:'表紙を録れませんでした' };
 
-  const tp = await parseClip(blob), cp = await parseClip(clips[0].blob);
-  if (!tp || !cp) return { from, to, reason:'表紙を確認できませんでした' };
-  if (sigOf(tp) !== sigOf(cp)) return { from, to, reason:'表紙の形式が本編と違うため付けませんでした' };
+  const tp = await parseClip(blob);
+  if (!tp) return { from, to, reason:'表紙を確認できませんでした' };
+  if (sigOf(tp) !== sigOf(cp)) {
+    return { from, to, reason:'表紙の形式が本編と違うため付けませんでした',
+             detail:`本編: ${sigOf(cp)}\n表紙: ${sigOf(tp)}` };
+  }
 
   let dur = 0;
   for (const t of tp.tracks) {
@@ -1726,7 +1745,17 @@ $('#go').onclick = async () => {
     onProg(1, `完成: ${fmtSec(seconds)} / ${fmtBytes(blob.size)}（${ms}ms）`
       + (gap > 0.5 ? ` / 検証: 実際は ${fmtSec(actual)}` : '')
       + (t.reason ? ` / ${t.reason}` : '')
-      + (Math.abs(want - seconds) > 1 ? `\n記録時間の合計 ${fmtSec(want)} より ${fmtSec(Math.abs(want-seconds))} 短くなっています。「クリップの長さを調べる」で原因を確認してください` : ''));
+      /* 記録時間は「録画ボタンを押していた実時間」なので、
+         映像の長さより常に少し長く出る。割合で見て、明らかに欠けている
+         ときだけ知らせる。 */
+      + (want - seconds > Math.max(1, want * 0.15)
+          ? `\n記録時間の合計 ${fmtSec(want)} に対して ${fmtSec(seconds)} です。差が大きいので「クリップの長さを調べる」で確認してください` : ''));
+
+    if (t.detail) {
+      const el = $('#diagout');
+      el.textContent = '表紙が付かなかった理由\n' + t.detail;
+      el.classList.add('on');
+    }
 
     const nm = (d) => d.replace(/-/g,'');
     const name = t.from === t.to ? `vlog_${nm(t.from)}.mp4` : `vlog_${nm(t.from)}-${nm(t.to)}.mp4`;
