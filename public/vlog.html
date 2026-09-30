@@ -282,7 +282,7 @@ body{display:flex;flex-direction:column}
       <div class="row" style="text-align:center;font-size:12px">
         <a href="/intro.html" target="_blank" rel="noopener" style="color:var(--accent)">はじめかた・使いかた</a>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.19</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.20</div>
     </div>
   </section>
 
@@ -332,7 +332,8 @@ body{display:flex;flex-direction:column}
 const CW = 720, CH = 1280, FPS = 30, VBPS = 2_000_000;
 const MAXHOLD = 30;                       // 長押しの上限（秒）
 
-const TAPSEC = 2;                    // タップで撮る長さ（固定。長押しは MAXHOLD まで）
+const TAPSEC = 2;
+const TITLESEC = 1.5;        // まとめた動画の先頭に置く表紙の長さ                    // タップで撮る長さ（固定。長押しは MAXHOLD まで）
 const WD     = ['日','月','火','水','木','金','土'];
 const WDE    = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
@@ -1530,6 +1531,113 @@ async function mergeClips(clips, onProg){
   return { blob, seconds: baseSec, used, skipped, actual };
 }
 
+/* ============================================================
+   表紙クリップ
+
+   写真アプリのサムネイルは動画の1コマ目なので、まとめた動画の
+   先頭に「いつからいつまでか」を書いた1枚を足しておくと、
+   開かなくてもどの期間のまとめか分かる。
+
+   本編と同じ大きさ・同じ設定で録らないと無変換結合の対象から
+   外れてしまうため、マイクも本編と同じものをそのまま使い、
+   音だけ止めて（enabled=false）無音で録る。
+   ============================================================ */
+const dayStamp = (key) => {
+  const [y,m,d] = key.split('-').map(Number);
+  return `${key} ${WDE[new Date(y, m-1, d).getDay()]}`;
+};
+
+function drawTitleCard(g, from, to, days, n, sec){
+  const F = (px, w) => `${w} ${px}px -apple-system, "Hiragino Sans", sans-serif`;
+  g.fillStyle = '#0b0d10'; g.fillRect(0,0,CW,CH);
+  g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+
+  g.fillStyle = '#8a93a3'; g.font = F(34, 400);
+  g.fillText('まとめ', CW/2, 500);
+
+  g.fillStyle = '#fff';
+  let metaY = 828;
+  if (from === to) {
+    g.font = F(62, 600);
+    g.fillText(dayStamp(from), CW/2, 632);
+    metaY = 726;
+  } else {
+    g.font = F(56, 600);
+    g.fillText(dayStamp(from), CW/2, 612);
+    g.fillStyle = '#8a93a3'; g.font = F(36, 400);
+    g.fillText('〜', CW/2, 668);
+    g.fillStyle = '#fff'; g.font = F(56, 600);
+    g.fillText(dayStamp(to), CW/2, 730);
+  }
+
+  g.fillStyle = '#8a93a3'; g.font = F(32, 400);
+  const meta = (days > 1 ? `${days}日 ・ ` : '') + `${n}本 ・ ${fmtSec(sec)}`;
+  g.fillText(meta, CW/2, metaY);
+}
+
+async function recordTitleClip(from, to, days, n, sec){
+  if (!MIME) return null;
+  const c = document.createElement('canvas');
+  c.width = CW; c.height = CH;
+  const g = c.getContext('2d');
+  drawTitleCard(g, from, to, days, n, sec);
+
+  const cs = c.captureStream(FPS);
+  const at = liveTrack(curAudio) ? curAudio : (micStream && micStream.getAudioTracks()[0]);
+  const withAudio = liveTrack(at);
+  if (withAudio) { try { cs.addTrack(at); at.enabled = false; } catch (e) {} }
+
+  let rec;
+  try { rec = new MediaRecorder(cs, { mimeType:MIME, videoBitsPerSecond:VBPS }); }
+  catch (e) { if (withAudio) { try { at.enabled = true; } catch (e2) {} } return null; }
+
+  const chunks = [];
+  const pack = () => chunks.length ? new Blob(chunks, { type:CONTAINER }) : null;
+  rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  const done = new Promise((res) => {
+    rec.onstop  = () => res(pack());
+    rec.onerror = () => res(null);
+  });
+
+  /* 静止画のままだと新しいコマが出ないことがあるので描き続ける */
+  let alive = true;
+  const tick = () => { if (!alive) return; drawTitleCard(g, from, to, days, n, sec); requestAnimationFrame(tick); };
+  requestAnimationFrame(tick);
+
+  rec.start(1000);
+  await new Promise(r => setTimeout(r, TITLESEC * 1000));
+  try { if (rec.state !== 'inactive') rec.stop(); } catch (e) {}
+  /* onstop が来ないことがあるので、待ちきりにはしない */
+  const blob = await Promise.race([done, new Promise(r => setTimeout(() => r(pack()), 4000))]);
+
+  alive = false;
+  cs.getVideoTracks().forEach(t => { try { t.stop(); } catch (e) {} });
+  if (withAudio) { try { at.enabled = true; } catch (e) {} }
+  return blob;
+}
+
+/* 表紙が本編と同じ形式で録れているかを確かめてから先頭に足す。
+   合わなければ表紙なしで進める（本編を巻き添えにしない）。 */
+async function titleClipFor(clips){
+  const dates = [...new Set(clips.map(c => c.date))].sort();
+  const from = dates[0], to = dates[dates.length-1];
+  const sec = clips.reduce((a,c) => a + (c.durationSec || 0), 0);
+  const blob = await recordTitleClip(from, to, dates.length, clips.length, sec);
+  if (!blob) return { from, to, reason:'表紙を録れませんでした' };
+
+  const tp = await parseClip(blob), cp = await parseClip(clips[0].blob);
+  if (!tp || !cp) return { from, to, reason:'表紙を確認できませんでした' };
+  if (sigOf(tp) !== sigOf(cp)) return { from, to, reason:'表紙の形式が本編と違うため付けませんでした' };
+
+  let dur = 0;
+  for (const t of tp.tracks) {
+    const ss = t.samples;
+    if (ss.length) dur = Math.max(dur, ((ss[ss.length-1].dts + ss[ss.length-1].duration) - ss[0].dts) / t.timescale);
+  }
+  if (!dur) return { from, to, reason:'表紙の長さを読めませんでした' };
+  return { from, to, clip:{ blob, durationSec: dur }, dur };
+}
+
 /* ---- 書き出しシート ---- */
 const RANGES = { day:'この日', week:'1週間', month:'1ヶ月', all:'すべて' };
 let exKind = 'day', exAnchor = null, exBusy = false;
@@ -1606,15 +1714,22 @@ $('#go').onclick = async () => {
   const onProg = (r, msg) => { $('#pbarf').style.width = Math.round(r*100)+'%'; $('#pstat').textContent = msg; };
   try {
     const t0 = performance.now();
-    const { blob, seconds, used, skipped, actual } = await mergeClips(clips, onProg);
+    onProg(0, '表紙を作成中');
+    const t = await titleClipFor(clips);
+    const list = t.clip ? [t.clip, ...clips] : clips;
+    const titleSec = t.dur || 0;
+
+    const { blob, seconds, used, skipped, actual } = await mergeClips(list, onProg);
     const ms = Math.round(performance.now() - t0);
     const gap = actual == null ? 0 : Math.abs(actual - seconds);
-    const want = clips.reduce((a,c) => a + (c.durationSec || 0), 0);
+    const want = clips.reduce((a,c) => a + (c.durationSec || 0), 0) + titleSec;
     onProg(1, `完成: ${fmtSec(seconds)} / ${fmtBytes(blob.size)}（${ms}ms）`
       + (gap > 0.5 ? ` / 検証: 実際は ${fmtSec(actual)}` : '')
+      + (t.reason ? ` / ${t.reason}` : '')
       + (Math.abs(want - seconds) > 1 ? `\n記録時間の合計 ${fmtSec(want)} より ${fmtSec(Math.abs(want-seconds))} 短くなっています。「クリップの長さを調べる」で原因を確認してください` : ''));
 
-    const name = `vlog_${exAnchor.replace(/-/g,'')}_${exKind}.mp4`;
+    const nm = (d) => d.replace(/-/g,'');
+    const name = t.from === t.to ? `vlog_${nm(t.from)}.mp4` : `vlog_${nm(t.from)}-${nm(t.to)}.mp4`;
     const file = new File([blob], name, { type:'video/mp4' });
     let shared = false;
     if (navigator.canShare && navigator.canShare({ files:[file] })) {
@@ -1630,7 +1745,7 @@ $('#go').onclick = async () => {
       $('#pstat').textContent += ' / 共有シートの「ビデオを保存」で写真アプリに入ります';
     }
     if (skipped) toast(`${skipped}本は設定が違うため除外しました`);
-    else toast(`${used}本を1本にまとめました`);
+    else toast(`${used - (t.clip ? 1 : 0)}本を1本にまとめました`);
   } catch (e) {
     $('#pstat').textContent = 'エラー: ' + (e.message || e);
     toast(e.message || String(e));
