@@ -282,7 +282,7 @@ body{display:flex;flex-direction:column}
       <div class="row" style="text-align:center;font-size:12px">
         <a href="/intro.html" target="_blank" rel="noopener" style="color:var(--accent)">はじめかた・使いかた</a>
       </div>
-      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.21</div>
+      <div class="row" style="text-align:center;color:var(--sub);font-size:11px">vlog-web v0.22</div>
     </div>
   </section>
 
@@ -332,8 +332,8 @@ body{display:flex;flex-direction:column}
 const CW = 720, CH = 1280, FPS = 30, VBPS = 2_000_000;
 const MAXHOLD = 30;                       // 長押しの上限（秒）
 
-const TAPSEC = 2;
-const TITLESEC = 1.5;        // まとめた動画の先頭に置く表紙の長さ                    // タップで撮る長さ（固定。長押しは MAXHOLD まで）
+const TAPSEC   = 2;                       // タップで撮る長さ（固定。長押しは MAXHOLD まで）
+const TITLESEC = 2.5;                     // まとめた動画の先頭に置く表紙の長さ（秒）
 const WD     = ['日','月','火','水','木','金','土'];
 const WDE    = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
@@ -1549,7 +1549,11 @@ const dayStamp = (key) => {
 
 function drawTitleCard(g, from, to, days, n, sec){
   const F = (px, w) => `${w} ${px}px -apple-system, "Hiragino Sans", sans-serif`;
-  g.fillStyle = '#0b0d10'; g.fillRect(0,0,CW,CH);
+  /* 中央がわずかに明るい黒。平らな黒より文字が浮いて見える。
+     8ビットの階調差が小さいと帯が出るので、浅くしすぎない。 */
+  const bg = g.createRadialGradient(CW/2, 560, 40, CW/2, 560, 820);
+  bg.addColorStop(0, '#242C3A'); bg.addColorStop(1, '#06070A');
+  g.fillStyle = bg; g.fillRect(0,0,CW,CH);
   g.textAlign = 'center'; g.textBaseline = 'alphabetic';
 
   g.fillStyle = '#8a93a3'; g.font = F(34, 400);
